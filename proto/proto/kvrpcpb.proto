@@ -1,0 +1,45 @@
+syntax="proto3";
+
+package kvrpcpb;
+
+option go_package = "github.com/zbchi/linkv/proto/pkg/linkvpb;linkvpb";
+
+
+message Context{
+    
+}
+
+message RawGetRequest{
+    Context context=1;
+    bytes key=2;
+}
+message RawGetResponse{
+    bytes value=1;
+}
+
+message RawPutRequest{
+    Context context=1;
+    bytes key=2;
+    bytes value=3;
+}
+message RawPutResponse{}
+
+message RawDeleteRequest{
+    Context context=1;
+    bytes key=2;
+}
+message RawDeleteResponse{}
+
+message RawScanRequest{
+    Context context=1;
+    bytes start_key=2;
+    uint32 limit=3;
+}
+message RawScanResponse{
+    repeated KvPair pairs =1;
+}
+
+message KvPair{
+    bytes key=1;
+    bytes value=2;
+}
