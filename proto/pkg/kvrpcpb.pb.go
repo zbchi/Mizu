@@ -60,7 +60,8 @@ func (*Context) Descriptor() ([]byte, []int) {
 type RawGetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *Context               `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Cf            string                 `protobuf:"bytes,2,opt,name=cf,proto3" json:"cf,omitempty"`
+	Key           []byte                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -100,6 +101,13 @@ func (x *RawGetRequest) GetContext() *Context {
 		return x.Context
 	}
 	return nil
+}
+
+func (x *RawGetRequest) GetCf() string {
+	if x != nil {
+		return x.Cf
+	}
+	return ""
 }
 
 func (x *RawGetRequest) GetKey() []byte {
@@ -156,8 +164,9 @@ func (x *RawGetResponse) GetValue() []byte {
 type RawPutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *Context               `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	Cf            string                 `protobuf:"bytes,2,opt,name=cf,proto3" json:"cf,omitempty"`
+	Key           []byte                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -197,6 +206,13 @@ func (x *RawPutRequest) GetContext() *Context {
 		return x.Context
 	}
 	return nil
+}
+
+func (x *RawPutRequest) GetCf() string {
+	if x != nil {
+		return x.Cf
+	}
+	return ""
 }
 
 func (x *RawPutRequest) GetKey() []byte {
@@ -252,7 +268,8 @@ func (*RawPutResponse) Descriptor() ([]byte, []int) {
 type RawDeleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *Context               `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
-	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Cf            string                 `protobuf:"bytes,2,opt,name=cf,proto3" json:"cf,omitempty"`
+	Key           []byte                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -292,6 +309,13 @@ func (x *RawDeleteRequest) GetContext() *Context {
 		return x.Context
 	}
 	return nil
+}
+
+func (x *RawDeleteRequest) GetCf() string {
+	if x != nil {
+		return x.Cf
+	}
+	return ""
 }
 
 func (x *RawDeleteRequest) GetKey() []byte {
@@ -340,8 +364,9 @@ func (*RawDeleteResponse) Descriptor() ([]byte, []int) {
 type RawScanRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Context       *Context               `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
-	StartKey      []byte                 `protobuf:"bytes,2,opt,name=start_key,json=startKey,proto3" json:"start_key,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	Cf            string                 `protobuf:"bytes,2,opt,name=cf,proto3" json:"cf,omitempty"`
+	StartKey      []byte                 `protobuf:"bytes,3,opt,name=start_key,json=startKey,proto3" json:"start_key,omitempty"`
+	Limit         uint32                 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -381,6 +406,13 @@ func (x *RawScanRequest) GetContext() *Context {
 		return x.Context
 	}
 	return nil
+}
+
+func (x *RawScanRequest) GetCf() string {
+	if x != nil {
+		return x.Cf
+	}
+	return ""
 }
 
 func (x *RawScanRequest) GetStartKey() []byte {
@@ -498,25 +530,29 @@ var File_kvrpcpb_proto protoreflect.FileDescriptor
 const file_kvrpcpb_proto_rawDesc = "" +
 	"\n" +
 	"\rkvrpcpb.proto\x12\akvrpcpb\"\t\n" +
-	"\aContext\"M\n" +
+	"\aContext\"]\n" +
 	"\rRawGetRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\"&\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\fR\x03key\"&\n" +
 	"\x0eRawGetResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\"c\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\"s\n" +
 	"\rRawPutRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\"\x10\n" +
-	"\x0eRawPutResponse\"P\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\fR\x05value\"\x10\n" +
+	"\x0eRawPutResponse\"`\n" +
 	"\x10RawDeleteRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\fR\x03key\"\x13\n" +
-	"\x11RawDeleteResponse\"o\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\fR\x03key\"\x13\n" +
+	"\x11RawDeleteResponse\"\x7f\n" +
 	"\x0eRawScanRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x1b\n" +
-	"\tstart_key\x18\x02 \x01(\fR\bstartKey\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"8\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x1b\n" +
+	"\tstart_key\x18\x03 \x01(\fR\bstartKey\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\"8\n" +
 	"\x0fRawScanResponse\x12%\n" +
 	"\x05pairs\x18\x01 \x03(\v2\x0f.kvrpcpb.KvPairR\x05pairs\"0\n" +
 	"\x06KvPair\x12\x10\n" +

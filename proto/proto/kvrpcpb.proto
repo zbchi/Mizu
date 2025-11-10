@@ -11,7 +11,8 @@ message Context{
 
 message RawGetRequest{
     Context context=1;
-    bytes key=2;
+    string cf =2;
+    bytes key=3;
 }
 message RawGetResponse{
     bytes value=1;
@@ -19,21 +20,24 @@ message RawGetResponse{
 
 message RawPutRequest{
     Context context=1;
-    bytes key=2;
-    bytes value=3;
+    string cf=2;
+    bytes key=3;
+    bytes value=4;
 }
 message RawPutResponse{}
 
 message RawDeleteRequest{
     Context context=1;
-    bytes key=2;
+    string  cf=2;
+    bytes key=3;
 }
 message RawDeleteResponse{}
 
 message RawScanRequest{
     Context context=1;
-    bytes start_key=2;
-    uint32 limit=3;
+    string cf=2;
+    bytes start_key=3;
+    uint32 limit=4;
 }
 message RawScanResponse{
     repeated KvPair pairs =1;
