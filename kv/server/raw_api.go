@@ -9,6 +9,11 @@ import (
 
 type Server struct {
 	storage storage.Storage
+	linkvpb.UnimplementedLinkvServer
+}
+
+func NewServer(st storage.Storage) *Server {
+	return &Server{storage: st}
 }
 
 func (s *Server) RawGet(ctx context.Context, req *linkvpb.RawGetRequest) (*linkvpb.RawGetResponse, error) {
@@ -34,14 +39,14 @@ func (s *Server) RawPut(ctx context.Context, req *linkvpb.RawPutRequest) (*linkv
 	return &linkvpb.RawPutResponse{}, err
 }
 
-func (s *Server) RawDelete(ctx *context.Context, req *linkvpb.RawDeleteRequest) (*linkvpb.RawDeleteResponse, error) {
+func (s *Server) RawDelete(ctx context.Context, req *linkvpb.RawDeleteRequest) (*linkvpb.RawDeleteResponse, error) {
 	del := storage.Delete{Key: req.Key, Cf: req.Cf}
 	mods := []storage.Modify{{Data: del}}
 	err := s.storage.Write(req.Context, mods)
 	return &linkvpb.RawDeleteResponse{}, err
 }
 
-func (s *Server) RawScan(ctx *context.Context, req *linkvpb.RawScanRequest) (*linkvpb.RawScanResponse, error) {
+func (s *Server) RawScan(ctx context.Context, req *linkvpb.RawScanRequest) (*linkvpb.RawScanResponse, error) {
 	reader, err := s.storage.Reader(req.Context)
 	if err != nil {
 		return nil, err
