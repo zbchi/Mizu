@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/zbchi/linkv/kv/storage"
-	linkvpb "github.com/zbchi/linkv/proto/pkg"
+	"github.com/zbchi/linkv/proto/linkvpb"
 )
 
 type Server struct {

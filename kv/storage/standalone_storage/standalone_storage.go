@@ -4,7 +4,7 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/linkv/kv/config"
 	"github.com/zbchi/linkv/kv/storage"
-	linkvpb "github.com/zbchi/linkv/proto/pkg"
+	"github.com/zbchi/linkv/proto/linkvpb"
 )
 
 type StandaloneStorage struct {

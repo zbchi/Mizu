@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	linkvpb "github.com/zbchi/linkv/proto/pkg"
+	"github.com/zbchi/linkv/proto/linkvpb"
 	"google.golang.org/grpc"
 )
 

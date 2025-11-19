@@ -2,7 +2,7 @@ package storage
 
 import (
 	"github.com/dgraph-io/badger/v3"
-	linkvpb "github.com/zbchi/linkv/proto/pkg"
+	"github.com/zbchi/linkv/proto/linkvpb"
 )
 
 type Storage interface {

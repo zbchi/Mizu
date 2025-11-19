@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v3.21.12
-// source: kvrpcpb.proto
+// source: linkvpb/linkv.proto
 
 package linkvpb
 
@@ -29,7 +29,7 @@ type Context struct {
 
 func (x *Context) Reset() {
 	*x = Context{}
-	mi := &file_kvrpcpb_proto_msgTypes[0]
+	mi := &file_linkvpb_linkv_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +41,7 @@ func (x *Context) String() string {
 func (*Context) ProtoMessage() {}
 
 func (x *Context) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[0]
+	mi := &file_linkvpb_linkv_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +54,7 @@ func (x *Context) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Context.ProtoReflect.Descriptor instead.
 func (*Context) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{0}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{0}
 }
 
 type RawGetRequest struct {
@@ -68,7 +68,7 @@ type RawGetRequest struct {
 
 func (x *RawGetRequest) Reset() {
 	*x = RawGetRequest{}
-	mi := &file_kvrpcpb_proto_msgTypes[1]
+	mi := &file_linkvpb_linkv_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -80,7 +80,7 @@ func (x *RawGetRequest) String() string {
 func (*RawGetRequest) ProtoMessage() {}
 
 func (x *RawGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[1]
+	mi := &file_linkvpb_linkv_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -93,7 +93,7 @@ func (x *RawGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawGetRequest.ProtoReflect.Descriptor instead.
 func (*RawGetRequest) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{1}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *RawGetRequest) GetContext() *Context {
@@ -126,7 +126,7 @@ type RawGetResponse struct {
 
 func (x *RawGetResponse) Reset() {
 	*x = RawGetResponse{}
-	mi := &file_kvrpcpb_proto_msgTypes[2]
+	mi := &file_linkvpb_linkv_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -138,7 +138,7 @@ func (x *RawGetResponse) String() string {
 func (*RawGetResponse) ProtoMessage() {}
 
 func (x *RawGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[2]
+	mi := &file_linkvpb_linkv_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -151,7 +151,7 @@ func (x *RawGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawGetResponse.ProtoReflect.Descriptor instead.
 func (*RawGetResponse) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{2}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RawGetResponse) GetValue() []byte {
@@ -173,7 +173,7 @@ type RawPutRequest struct {
 
 func (x *RawPutRequest) Reset() {
 	*x = RawPutRequest{}
-	mi := &file_kvrpcpb_proto_msgTypes[3]
+	mi := &file_linkvpb_linkv_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -185,7 +185,7 @@ func (x *RawPutRequest) String() string {
 func (*RawPutRequest) ProtoMessage() {}
 
 func (x *RawPutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[3]
+	mi := &file_linkvpb_linkv_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -198,7 +198,7 @@ func (x *RawPutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawPutRequest.ProtoReflect.Descriptor instead.
 func (*RawPutRequest) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{3}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RawPutRequest) GetContext() *Context {
@@ -237,7 +237,7 @@ type RawPutResponse struct {
 
 func (x *RawPutResponse) Reset() {
 	*x = RawPutResponse{}
-	mi := &file_kvrpcpb_proto_msgTypes[4]
+	mi := &file_linkvpb_linkv_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -249,7 +249,7 @@ func (x *RawPutResponse) String() string {
 func (*RawPutResponse) ProtoMessage() {}
 
 func (x *RawPutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[4]
+	mi := &file_linkvpb_linkv_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -262,7 +262,7 @@ func (x *RawPutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawPutResponse.ProtoReflect.Descriptor instead.
 func (*RawPutResponse) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{4}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{4}
 }
 
 type RawDeleteRequest struct {
@@ -276,7 +276,7 @@ type RawDeleteRequest struct {
 
 func (x *RawDeleteRequest) Reset() {
 	*x = RawDeleteRequest{}
-	mi := &file_kvrpcpb_proto_msgTypes[5]
+	mi := &file_linkvpb_linkv_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -288,7 +288,7 @@ func (x *RawDeleteRequest) String() string {
 func (*RawDeleteRequest) ProtoMessage() {}
 
 func (x *RawDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[5]
+	mi := &file_linkvpb_linkv_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -301,7 +301,7 @@ func (x *RawDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawDeleteRequest.ProtoReflect.Descriptor instead.
 func (*RawDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{5}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RawDeleteRequest) GetContext() *Context {
@@ -333,7 +333,7 @@ type RawDeleteResponse struct {
 
 func (x *RawDeleteResponse) Reset() {
 	*x = RawDeleteResponse{}
-	mi := &file_kvrpcpb_proto_msgTypes[6]
+	mi := &file_linkvpb_linkv_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -345,7 +345,7 @@ func (x *RawDeleteResponse) String() string {
 func (*RawDeleteResponse) ProtoMessage() {}
 
 func (x *RawDeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[6]
+	mi := &file_linkvpb_linkv_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,7 +358,7 @@ func (x *RawDeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawDeleteResponse.ProtoReflect.Descriptor instead.
 func (*RawDeleteResponse) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{6}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{6}
 }
 
 type RawScanRequest struct {
@@ -373,7 +373,7 @@ type RawScanRequest struct {
 
 func (x *RawScanRequest) Reset() {
 	*x = RawScanRequest{}
-	mi := &file_kvrpcpb_proto_msgTypes[7]
+	mi := &file_linkvpb_linkv_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -385,7 +385,7 @@ func (x *RawScanRequest) String() string {
 func (*RawScanRequest) ProtoMessage() {}
 
 func (x *RawScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[7]
+	mi := &file_linkvpb_linkv_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -398,7 +398,7 @@ func (x *RawScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawScanRequest.ProtoReflect.Descriptor instead.
 func (*RawScanRequest) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{7}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RawScanRequest) GetContext() *Context {
@@ -438,7 +438,7 @@ type RawScanResponse struct {
 
 func (x *RawScanResponse) Reset() {
 	*x = RawScanResponse{}
-	mi := &file_kvrpcpb_proto_msgTypes[8]
+	mi := &file_linkvpb_linkv_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -450,7 +450,7 @@ func (x *RawScanResponse) String() string {
 func (*RawScanResponse) ProtoMessage() {}
 
 func (x *RawScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[8]
+	mi := &file_linkvpb_linkv_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -463,7 +463,7 @@ func (x *RawScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RawScanResponse.ProtoReflect.Descriptor instead.
 func (*RawScanResponse) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{8}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RawScanResponse) GetPairs() []*KvPair {
@@ -483,7 +483,7 @@ type KvPair struct {
 
 func (x *KvPair) Reset() {
 	*x = KvPair{}
-	mi := &file_kvrpcpb_proto_msgTypes[9]
+	mi := &file_linkvpb_linkv_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +495,7 @@ func (x *KvPair) String() string {
 func (*KvPair) ProtoMessage() {}
 
 func (x *KvPair) ProtoReflect() protoreflect.Message {
-	mi := &file_kvrpcpb_proto_msgTypes[9]
+	mi := &file_linkvpb_linkv_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +508,7 @@ func (x *KvPair) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KvPair.ProtoReflect.Descriptor instead.
 func (*KvPair) Descriptor() ([]byte, []int) {
-	return file_kvrpcpb_proto_rawDescGZIP(), []int{9}
+	return file_linkvpb_linkv_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *KvPair) GetKey() []byte {
@@ -525,98 +525,111 @@ func (x *KvPair) GetValue() []byte {
 	return nil
 }
 
-var File_kvrpcpb_proto protoreflect.FileDescriptor
+var File_linkvpb_linkv_proto protoreflect.FileDescriptor
 
-const file_kvrpcpb_proto_rawDesc = "" +
+const file_linkvpb_linkv_proto_rawDesc = "" +
 	"\n" +
-	"\rkvrpcpb.proto\x12\akvrpcpb\"\t\n" +
+	"\x13linkvpb/linkv.proto\x12\alinkvpb\"\t\n" +
 	"\aContext\"]\n" +
 	"\rRawGetRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.linkvpb.ContextR\acontext\x12\x0e\n" +
 	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\fR\x03key\"&\n" +
 	"\x0eRawGetResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"s\n" +
 	"\rRawPutRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.linkvpb.ContextR\acontext\x12\x0e\n" +
 	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\fR\x03key\x12\x14\n" +
 	"\x05value\x18\x04 \x01(\fR\x05value\"\x10\n" +
 	"\x0eRawPutResponse\"`\n" +
 	"\x10RawDeleteRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.linkvpb.ContextR\acontext\x12\x0e\n" +
 	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\fR\x03key\"\x13\n" +
 	"\x11RawDeleteResponse\"\x7f\n" +
 	"\x0eRawScanRequest\x12*\n" +
-	"\acontext\x18\x01 \x01(\v2\x10.kvrpcpb.ContextR\acontext\x12\x0e\n" +
+	"\acontext\x18\x01 \x01(\v2\x10.linkvpb.ContextR\acontext\x12\x0e\n" +
 	"\x02cf\x18\x02 \x01(\tR\x02cf\x12\x1b\n" +
 	"\tstart_key\x18\x03 \x01(\fR\bstartKey\x12\x14\n" +
 	"\x05limit\x18\x04 \x01(\rR\x05limit\"8\n" +
 	"\x0fRawScanResponse\x12%\n" +
-	"\x05pairs\x18\x01 \x03(\v2\x0f.kvrpcpb.KvPairR\x05pairs\"0\n" +
+	"\x05pairs\x18\x01 \x03(\v2\x0f.linkvpb.KvPairR\x05pairs\"0\n" +
 	"\x06KvPair\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05valueB2Z0github.com/zbchi/linkv/proto/pkg/linkvpb;linkvpbb\x06proto3"
+	"\x05value\x18\x02 \x01(\fR\x05value2\xff\x01\n" +
+	"\x05Linkv\x129\n" +
+	"\x06RawGet\x12\x16.linkvpb.RawGetRequest\x1a\x17.linkvpb.RawGetResponse\x129\n" +
+	"\x06RawPut\x12\x16.linkvpb.RawPutRequest\x1a\x17.linkvpb.RawPutResponse\x12B\n" +
+	"\tRawDelete\x12\x19.linkvpb.RawDeleteRequest\x1a\x1a.linkvpb.RawDeleteResponse\x12<\n" +
+	"\aRawScan\x12\x17.linkvpb.RawScanRequest\x1a\x18.linkvpb.RawScanResponseB&Z$github.com/zbchi/linkv/proto/linkvpbb\x06proto3"
 
 var (
-	file_kvrpcpb_proto_rawDescOnce sync.Once
-	file_kvrpcpb_proto_rawDescData []byte
+	file_linkvpb_linkv_proto_rawDescOnce sync.Once
+	file_linkvpb_linkv_proto_rawDescData []byte
 )
 
-func file_kvrpcpb_proto_rawDescGZIP() []byte {
-	file_kvrpcpb_proto_rawDescOnce.Do(func() {
-		file_kvrpcpb_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_kvrpcpb_proto_rawDesc), len(file_kvrpcpb_proto_rawDesc)))
+func file_linkvpb_linkv_proto_rawDescGZIP() []byte {
+	file_linkvpb_linkv_proto_rawDescOnce.Do(func() {
+		file_linkvpb_linkv_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_linkvpb_linkv_proto_rawDesc), len(file_linkvpb_linkv_proto_rawDesc)))
 	})
-	return file_kvrpcpb_proto_rawDescData
+	return file_linkvpb_linkv_proto_rawDescData
 }
 
-var file_kvrpcpb_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
-var file_kvrpcpb_proto_goTypes = []any{
-	(*Context)(nil),           // 0: kvrpcpb.Context
-	(*RawGetRequest)(nil),     // 1: kvrpcpb.RawGetRequest
-	(*RawGetResponse)(nil),    // 2: kvrpcpb.RawGetResponse
-	(*RawPutRequest)(nil),     // 3: kvrpcpb.RawPutRequest
-	(*RawPutResponse)(nil),    // 4: kvrpcpb.RawPutResponse
-	(*RawDeleteRequest)(nil),  // 5: kvrpcpb.RawDeleteRequest
-	(*RawDeleteResponse)(nil), // 6: kvrpcpb.RawDeleteResponse
-	(*RawScanRequest)(nil),    // 7: kvrpcpb.RawScanRequest
-	(*RawScanResponse)(nil),   // 8: kvrpcpb.RawScanResponse
-	(*KvPair)(nil),            // 9: kvrpcpb.KvPair
+var file_linkvpb_linkv_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_linkvpb_linkv_proto_goTypes = []any{
+	(*Context)(nil),           // 0: linkvpb.Context
+	(*RawGetRequest)(nil),     // 1: linkvpb.RawGetRequest
+	(*RawGetResponse)(nil),    // 2: linkvpb.RawGetResponse
+	(*RawPutRequest)(nil),     // 3: linkvpb.RawPutRequest
+	(*RawPutResponse)(nil),    // 4: linkvpb.RawPutResponse
+	(*RawDeleteRequest)(nil),  // 5: linkvpb.RawDeleteRequest
+	(*RawDeleteResponse)(nil), // 6: linkvpb.RawDeleteResponse
+	(*RawScanRequest)(nil),    // 7: linkvpb.RawScanRequest
+	(*RawScanResponse)(nil),   // 8: linkvpb.RawScanResponse
+	(*KvPair)(nil),            // 9: linkvpb.KvPair
 }
-var file_kvrpcpb_proto_depIdxs = []int32{
-	0, // 0: kvrpcpb.RawGetRequest.context:type_name -> kvrpcpb.Context
-	0, // 1: kvrpcpb.RawPutRequest.context:type_name -> kvrpcpb.Context
-	0, // 2: kvrpcpb.RawDeleteRequest.context:type_name -> kvrpcpb.Context
-	0, // 3: kvrpcpb.RawScanRequest.context:type_name -> kvrpcpb.Context
-	9, // 4: kvrpcpb.RawScanResponse.pairs:type_name -> kvrpcpb.KvPair
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
+var file_linkvpb_linkv_proto_depIdxs = []int32{
+	0, // 0: linkvpb.RawGetRequest.context:type_name -> linkvpb.Context
+	0, // 1: linkvpb.RawPutRequest.context:type_name -> linkvpb.Context
+	0, // 2: linkvpb.RawDeleteRequest.context:type_name -> linkvpb.Context
+	0, // 3: linkvpb.RawScanRequest.context:type_name -> linkvpb.Context
+	9, // 4: linkvpb.RawScanResponse.pairs:type_name -> linkvpb.KvPair
+	1, // 5: linkvpb.Linkv.RawGet:input_type -> linkvpb.RawGetRequest
+	3, // 6: linkvpb.Linkv.RawPut:input_type -> linkvpb.RawPutRequest
+	5, // 7: linkvpb.Linkv.RawDelete:input_type -> linkvpb.RawDeleteRequest
+	7, // 8: linkvpb.Linkv.RawScan:input_type -> linkvpb.RawScanRequest
+	2, // 9: linkvpb.Linkv.RawGet:output_type -> linkvpb.RawGetResponse
+	4, // 10: linkvpb.Linkv.RawPut:output_type -> linkvpb.RawPutResponse
+	6, // 11: linkvpb.Linkv.RawDelete:output_type -> linkvpb.RawDeleteResponse
+	8, // 12: linkvpb.Linkv.RawScan:output_type -> linkvpb.RawScanResponse
+	9, // [9:13] is the sub-list for method output_type
+	5, // [5:9] is the sub-list for method input_type
 	5, // [5:5] is the sub-list for extension type_name
 	5, // [5:5] is the sub-list for extension extendee
 	0, // [0:5] is the sub-list for field type_name
 }
 
-func init() { file_kvrpcpb_proto_init() }
-func file_kvrpcpb_proto_init() {
-	if File_kvrpcpb_proto != nil {
+func init() { file_linkvpb_linkv_proto_init() }
+func file_linkvpb_linkv_proto_init() {
+	if File_linkvpb_linkv_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kvrpcpb_proto_rawDesc), len(file_kvrpcpb_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_linkvpb_linkv_proto_rawDesc), len(file_linkvpb_linkv_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   10,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
-		GoTypes:           file_kvrpcpb_proto_goTypes,
-		DependencyIndexes: file_kvrpcpb_proto_depIdxs,
-		MessageInfos:      file_kvrpcpb_proto_msgTypes,
+		GoTypes:           file_linkvpb_linkv_proto_goTypes,
+		DependencyIndexes: file_linkvpb_linkv_proto_depIdxs,
+		MessageInfos:      file_linkvpb_linkv_proto_msgTypes,
 	}.Build()
-	File_kvrpcpb_proto = out.File
-	file_kvrpcpb_proto_goTypes = nil
-	file_kvrpcpb_proto_depIdxs = nil
+	File_linkvpb_linkv_proto = out.File
+	file_linkvpb_linkv_proto_goTypes = nil
+	file_linkvpb_linkv_proto_depIdxs = nil
 }

@@ -7,7 +7,8 @@ import (
 	"github.com/zbchi/linkv/kv/config"
 	"github.com/zbchi/linkv/kv/server"
 	standalonestorage "github.com/zbchi/linkv/kv/storage/standalone_storage"
-	linkvpb "github.com/zbchi/linkv/proto/pkg"
+	"github.com/zbchi/linkv/proto/linkvpb"
+
 	"google.golang.org/grpc"
 )
 

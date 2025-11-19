@@ -1,9 +1,15 @@
 syntax="proto3";
 
-package kvrpcpb;
+package linkvpb;
 
-option go_package = "github.com/zbchi/linkv/proto/pkg/linkvpb;linkvpb";
+option go_package = "github.com/zbchi/linkv/proto/linkvpb";
 
+service Linkv{
+    rpc RawGet(RawGetRequest)returns(RawGetResponse);
+    rpc RawPut(RawPutRequest)returns(RawPutResponse);
+    rpc RawDelete(RawDeleteRequest)returns(RawDeleteResponse);
+    rpc RawScan(RawScanRequest)returns(RawScanResponse);
+}
 
 message Context{
     
