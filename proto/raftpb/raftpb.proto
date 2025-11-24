@@ -4,42 +4,36 @@ package raftpb;
 
 option go_package = "github.com/zbchi/linkv/proto/raftpb";
 
-message RequestVoteRequest{
-    uint64 candidateId=1;
-    uint64 currentTerm=2;
-    uint64 lastLogIndex=3;
-    uint64 lastLogTerm=4;
+message Entry{
+    uint64 term=1;
+    uint64 index=2;
+    bytes data=3;
 }
 
-message RequestVoteResponse{
-    bool isVote=1;
-    uint64 Term=2;
+message Message{
+    enum Type{
+        MsgHup=0;
+        MsgBeat=1;
+        MsgApp=2;
+        MsgAppResp=3;
+        MsgVote=4;
+        MsgVoteResp=5;
+        MsgSnap=6;
+    }
+
+    Type type=1;
+    uint64 from=2;
+    uint64 to=3;
+    uint64 term=4;
+    uint64 logTerm=5;
+    uint64 logIndex=6;
+    uint64 commit=7;
+    repeated Entry entries=8;
+    bool reject=9;
+    uint64 rejectHint=10;
 }
 
-message LogEntry{
-    int64 term=1;
-    int64 index=2;
-    bytes command=3;
-}
-
-
-message AppendEntriesRequest{
-    int64 term=1;
-    int64 Leader=2;
-    repeated LogEntry entries=3;
-    int64 leaderCommit=4;
-    int64 preLogIndex=5;
-    int64 preLogTerm=6;
-}
-
-message AppendEntriesResponse{
-    bool isSucess=1;
-    int64 term=2;
-    int64 conflictTerm=3;
-    int64 conflictIndex=4;
-}
 
 service Raft{
-    rpc AppendEntries(AppendEntriesRequest)returns (AppendEntriesResponse);
-    rpc RequestVote(RequestVoteRequest)returns(RequestVoteResponse);
+    rpc Step(Message)returns(Message);
 }

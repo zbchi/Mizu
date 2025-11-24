@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	conf := config.Config{DBPath: "/tmp/linkv"}
+	conf := config.Config{DBPath: "/db/linkv"}
 	storage := standalonestorage.NewStandaloneStorage(&conf)
 	if err := storage.Start(); err != nil {
 		log.Fatalf("failed to start storage: %v", err)

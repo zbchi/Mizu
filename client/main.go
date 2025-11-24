@@ -21,14 +21,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err = client.RawPut(ctx, &linkvpb.RawPutRequest{
-		Cf:    "default",
-		Key:   []byte("key"),
-		Value: []byte("value"),
-	})
-	if err != nil {
-		log.Fatal("RawPut error:", err)
-	}
+	// _, err = client.RawPut(ctx, &linkvpb.RawPutRequest{
+	// 	Cf:    "default",
+	// 	Key:   []byte("key"),
+	// 	Value: []byte("value"),
+	// })
+	// if err != nil {
+	// 	log.Fatal("RawPut error:", err)
+	// }
+
+	// _, err = client.RawDelete(ctx, &linkvpb.RawDeleteRequest{
+	// 	Cf:  "default",
+	// 	Key: []byte("key"),
+	// })
 
 	resp, err := client.RawGet(ctx, &linkvpb.RawGetRequest{
 		Cf:  "default",

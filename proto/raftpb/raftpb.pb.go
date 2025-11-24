@@ -21,30 +21,90 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type RequestVoteRequest struct {
+type Message_Type int32
+
+const (
+	Message_MsgHup      Message_Type = 0
+	Message_MsgBeat     Message_Type = 1
+	Message_MsgApp      Message_Type = 2
+	Message_MsgAppResp  Message_Type = 3
+	Message_MsgVote     Message_Type = 4
+	Message_MsgVoteResp Message_Type = 5
+	Message_MsgSnap     Message_Type = 6
+)
+
+// Enum value maps for Message_Type.
+var (
+	Message_Type_name = map[int32]string{
+		0: "MsgHup",
+		1: "MsgBeat",
+		2: "MsgApp",
+		3: "MsgAppResp",
+		4: "MsgVote",
+		5: "MsgVoteResp",
+		6: "MsgSnap",
+	}
+	Message_Type_value = map[string]int32{
+		"MsgHup":      0,
+		"MsgBeat":     1,
+		"MsgApp":      2,
+		"MsgAppResp":  3,
+		"MsgVote":     4,
+		"MsgVoteResp": 5,
+		"MsgSnap":     6,
+	}
+)
+
+func (x Message_Type) Enum() *Message_Type {
+	p := new(Message_Type)
+	*p = x
+	return p
+}
+
+func (x Message_Type) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Message_Type) Descriptor() protoreflect.EnumDescriptor {
+	return file_raftpb_raftpb_proto_enumTypes[0].Descriptor()
+}
+
+func (Message_Type) Type() protoreflect.EnumType {
+	return &file_raftpb_raftpb_proto_enumTypes[0]
+}
+
+func (x Message_Type) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Message_Type.Descriptor instead.
+func (Message_Type) EnumDescriptor() ([]byte, []int) {
+	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{1, 0}
+}
+
+type Entry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CandidateId   uint64                 `protobuf:"varint,1,opt,name=candidateId,proto3" json:"candidateId,omitempty"`
-	CurrentTerm   uint64                 `protobuf:"varint,2,opt,name=currentTerm,proto3" json:"currentTerm,omitempty"`
-	LastLogIndex  uint64                 `protobuf:"varint,3,opt,name=lastLogIndex,proto3" json:"lastLogIndex,omitempty"`
-	LastLogTerm   uint64                 `protobuf:"varint,4,opt,name=lastLogTerm,proto3" json:"lastLogTerm,omitempty"`
+	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	Index         uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RequestVoteRequest) Reset() {
-	*x = RequestVoteRequest{}
+func (x *Entry) Reset() {
+	*x = Entry{}
 	mi := &file_raftpb_raftpb_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RequestVoteRequest) String() string {
+func (x *Entry) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RequestVoteRequest) ProtoMessage() {}
+func (*Entry) ProtoMessage() {}
 
-func (x *RequestVoteRequest) ProtoReflect() protoreflect.Message {
+func (x *Entry) ProtoReflect() protoreflect.Message {
 	mi := &file_raftpb_raftpb_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -56,178 +116,63 @@ func (x *RequestVoteRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RequestVoteRequest.ProtoReflect.Descriptor instead.
-func (*RequestVoteRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use Entry.ProtoReflect.Descriptor instead.
+func (*Entry) Descriptor() ([]byte, []int) {
 	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *RequestVoteRequest) GetCandidateId() uint64 {
-	if x != nil {
-		return x.CandidateId
-	}
-	return 0
-}
-
-func (x *RequestVoteRequest) GetCurrentTerm() uint64 {
-	if x != nil {
-		return x.CurrentTerm
-	}
-	return 0
-}
-
-func (x *RequestVoteRequest) GetLastLogIndex() uint64 {
-	if x != nil {
-		return x.LastLogIndex
-	}
-	return 0
-}
-
-func (x *RequestVoteRequest) GetLastLogTerm() uint64 {
-	if x != nil {
-		return x.LastLogTerm
-	}
-	return 0
-}
-
-type RequestVoteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IsVote        bool                   `protobuf:"varint,1,opt,name=isVote,proto3" json:"isVote,omitempty"`
-	Term          uint64                 `protobuf:"varint,2,opt,name=Term,proto3" json:"Term,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RequestVoteResponse) Reset() {
-	*x = RequestVoteResponse{}
-	mi := &file_raftpb_raftpb_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RequestVoteResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RequestVoteResponse) ProtoMessage() {}
-
-func (x *RequestVoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_raftpb_raftpb_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RequestVoteResponse.ProtoReflect.Descriptor instead.
-func (*RequestVoteResponse) Descriptor() ([]byte, []int) {
-	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *RequestVoteResponse) GetIsVote() bool {
-	if x != nil {
-		return x.IsVote
-	}
-	return false
-}
-
-func (x *RequestVoteResponse) GetTerm() uint64 {
+func (x *Entry) GetTerm() uint64 {
 	if x != nil {
 		return x.Term
 	}
 	return 0
 }
 
-type LogEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Command       []byte                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *LogEntry) Reset() {
-	*x = LogEntry{}
-	mi := &file_raftpb_raftpb_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LogEntry) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LogEntry) ProtoMessage() {}
-
-func (x *LogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_raftpb_raftpb_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
-func (*LogEntry) Descriptor() ([]byte, []int) {
-	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *LogEntry) GetTerm() int64 {
-	if x != nil {
-		return x.Term
-	}
-	return 0
-}
-
-func (x *LogEntry) GetIndex() int64 {
+func (x *Entry) GetIndex() uint64 {
 	if x != nil {
 		return x.Index
 	}
 	return 0
 }
 
-func (x *LogEntry) GetCommand() []byte {
+func (x *Entry) GetData() []byte {
 	if x != nil {
-		return x.Command
+		return x.Data
 	}
 	return nil
 }
 
-type AppendEntriesRequest struct {
+type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Term          int64                  `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
-	Leader        int64                  `protobuf:"varint,2,opt,name=Leader,proto3" json:"Leader,omitempty"`
-	Entries       []*LogEntry            `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
-	LeaderCommit  int64                  `protobuf:"varint,4,opt,name=leaderCommit,proto3" json:"leaderCommit,omitempty"`
-	PreLogIndex   int64                  `protobuf:"varint,5,opt,name=preLogIndex,proto3" json:"preLogIndex,omitempty"`
-	PreLogTerm    int64                  `protobuf:"varint,6,opt,name=preLogTerm,proto3" json:"preLogTerm,omitempty"`
+	Type          Message_Type           `protobuf:"varint,1,opt,name=type,proto3,enum=raftpb.Message_Type" json:"type,omitempty"`
+	From          uint64                 `protobuf:"varint,2,opt,name=from,proto3" json:"from,omitempty"`
+	To            uint64                 `protobuf:"varint,3,opt,name=to,proto3" json:"to,omitempty"`
+	Term          uint64                 `protobuf:"varint,4,opt,name=term,proto3" json:"term,omitempty"`
+	LogTerm       uint64                 `protobuf:"varint,5,opt,name=logTerm,proto3" json:"logTerm,omitempty"`
+	LogIndex      uint64                 `protobuf:"varint,6,opt,name=logIndex,proto3" json:"logIndex,omitempty"`
+	Commit        uint64                 `protobuf:"varint,7,opt,name=commit,proto3" json:"commit,omitempty"`
+	Entries       []*Entry               `protobuf:"bytes,8,rep,name=entries,proto3" json:"entries,omitempty"`
+	Reject        bool                   `protobuf:"varint,9,opt,name=reject,proto3" json:"reject,omitempty"`
+	RejectHint    uint64                 `protobuf:"varint,10,opt,name=rejectHint,proto3" json:"rejectHint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AppendEntriesRequest) Reset() {
-	*x = AppendEntriesRequest{}
-	mi := &file_raftpb_raftpb_proto_msgTypes[3]
+func (x *Message) Reset() {
+	*x = Message{}
+	mi := &file_raftpb_raftpb_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AppendEntriesRequest) String() string {
+func (x *Message) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AppendEntriesRequest) ProtoMessage() {}
+func (*Message) ProtoMessage() {}
 
-func (x *AppendEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_raftpb_raftpb_proto_msgTypes[3]
+func (x *Message) ProtoReflect() protoreflect.Message {
+	mi := &file_raftpb_raftpb_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -238,117 +183,77 @@ func (x *AppendEntriesRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AppendEntriesRequest.ProtoReflect.Descriptor instead.
-func (*AppendEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use Message.ProtoReflect.Descriptor instead.
+func (*Message) Descriptor() ([]byte, []int) {
+	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *AppendEntriesRequest) GetTerm() int64 {
+func (x *Message) GetType() Message_Type {
+	if x != nil {
+		return x.Type
+	}
+	return Message_MsgHup
+}
+
+func (x *Message) GetFrom() uint64 {
+	if x != nil {
+		return x.From
+	}
+	return 0
+}
+
+func (x *Message) GetTo() uint64 {
+	if x != nil {
+		return x.To
+	}
+	return 0
+}
+
+func (x *Message) GetTerm() uint64 {
 	if x != nil {
 		return x.Term
 	}
 	return 0
 }
 
-func (x *AppendEntriesRequest) GetLeader() int64 {
+func (x *Message) GetLogTerm() uint64 {
 	if x != nil {
-		return x.Leader
+		return x.LogTerm
 	}
 	return 0
 }
 
-func (x *AppendEntriesRequest) GetEntries() []*LogEntry {
+func (x *Message) GetLogIndex() uint64 {
+	if x != nil {
+		return x.LogIndex
+	}
+	return 0
+}
+
+func (x *Message) GetCommit() uint64 {
+	if x != nil {
+		return x.Commit
+	}
+	return 0
+}
+
+func (x *Message) GetEntries() []*Entry {
 	if x != nil {
 		return x.Entries
 	}
 	return nil
 }
 
-func (x *AppendEntriesRequest) GetLeaderCommit() int64 {
+func (x *Message) GetReject() bool {
 	if x != nil {
-		return x.LeaderCommit
-	}
-	return 0
-}
-
-func (x *AppendEntriesRequest) GetPreLogIndex() int64 {
-	if x != nil {
-		return x.PreLogIndex
-	}
-	return 0
-}
-
-func (x *AppendEntriesRequest) GetPreLogTerm() int64 {
-	if x != nil {
-		return x.PreLogTerm
-	}
-	return 0
-}
-
-type AppendEntriesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IsSucess      bool                   `protobuf:"varint,1,opt,name=isSucess,proto3" json:"isSucess,omitempty"`
-	Term          int64                  `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`
-	ConflictTerm  int64                  `protobuf:"varint,3,opt,name=conflictTerm,proto3" json:"conflictTerm,omitempty"`
-	ConflictIndex int64                  `protobuf:"varint,4,opt,name=conflictIndex,proto3" json:"conflictIndex,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AppendEntriesResponse) Reset() {
-	*x = AppendEntriesResponse{}
-	mi := &file_raftpb_raftpb_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AppendEntriesResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AppendEntriesResponse) ProtoMessage() {}
-
-func (x *AppendEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_raftpb_raftpb_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AppendEntriesResponse.ProtoReflect.Descriptor instead.
-func (*AppendEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *AppendEntriesResponse) GetIsSucess() bool {
-	if x != nil {
-		return x.IsSucess
+		return x.Reject
 	}
 	return false
 }
 
-func (x *AppendEntriesResponse) GetTerm() int64 {
+func (x *Message) GetRejectHint() uint64 {
 	if x != nil {
-		return x.Term
-	}
-	return 0
-}
-
-func (x *AppendEntriesResponse) GetConflictTerm() int64 {
-	if x != nil {
-		return x.ConflictTerm
-	}
-	return 0
-}
-
-func (x *AppendEntriesResponse) GetConflictIndex() int64 {
-	if x != nil {
-		return x.ConflictIndex
+		return x.RejectHint
 	}
 	return 0
 }
@@ -357,36 +262,38 @@ var File_raftpb_raftpb_proto protoreflect.FileDescriptor
 
 const file_raftpb_raftpb_proto_rawDesc = "" +
 	"\n" +
-	"\x13raftpb/raftpb.proto\x12\x06raftpb\"\x9e\x01\n" +
-	"\x12RequestVoteRequest\x12 \n" +
-	"\vcandidateId\x18\x01 \x01(\x04R\vcandidateId\x12 \n" +
-	"\vcurrentTerm\x18\x02 \x01(\x04R\vcurrentTerm\x12\"\n" +
-	"\flastLogIndex\x18\x03 \x01(\x04R\flastLogIndex\x12 \n" +
-	"\vlastLogTerm\x18\x04 \x01(\x04R\vlastLogTerm\"A\n" +
-	"\x13RequestVoteResponse\x12\x16\n" +
-	"\x06isVote\x18\x01 \x01(\bR\x06isVote\x12\x12\n" +
-	"\x04Term\x18\x02 \x01(\x04R\x04Term\"N\n" +
-	"\bLogEntry\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x18\n" +
-	"\acommand\x18\x03 \x01(\fR\acommand\"\xd4\x01\n" +
-	"\x14AppendEntriesRequest\x12\x12\n" +
-	"\x04term\x18\x01 \x01(\x03R\x04term\x12\x16\n" +
-	"\x06Leader\x18\x02 \x01(\x03R\x06Leader\x12*\n" +
-	"\aentries\x18\x03 \x03(\v2\x10.raftpb.LogEntryR\aentries\x12\"\n" +
-	"\fleaderCommit\x18\x04 \x01(\x03R\fleaderCommit\x12 \n" +
-	"\vpreLogIndex\x18\x05 \x01(\x03R\vpreLogIndex\x12\x1e\n" +
+	"\x13raftpb/raftpb.proto\x12\x06raftpb\"E\n" +
+	"\x05Entry\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"\x82\x03\n" +
+	"\aMessage\x12(\n" +
+	"\x04type\x18\x01 \x01(\x0e2\x14.raftpb.Message.TypeR\x04type\x12\x12\n" +
+	"\x04from\x18\x02 \x01(\x04R\x04from\x12\x0e\n" +
+	"\x02to\x18\x03 \x01(\x04R\x02to\x12\x12\n" +
+	"\x04term\x18\x04 \x01(\x04R\x04term\x12\x18\n" +
+	"\alogTerm\x18\x05 \x01(\x04R\alogTerm\x12\x1a\n" +
+	"\blogIndex\x18\x06 \x01(\x04R\blogIndex\x12\x16\n" +
+	"\x06commit\x18\a \x01(\x04R\x06commit\x12'\n" +
+	"\aentries\x18\b \x03(\v2\r.raftpb.EntryR\aentries\x12\x16\n" +
+	"\x06reject\x18\t \x01(\bR\x06reject\x12\x1e\n" +
 	"\n" +
-	"preLogTerm\x18\x06 \x01(\x03R\n" +
-	"preLogTerm\"\x91\x01\n" +
-	"\x15AppendEntriesResponse\x12\x1a\n" +
-	"\bisSucess\x18\x01 \x01(\bR\bisSucess\x12\x12\n" +
-	"\x04term\x18\x02 \x01(\x03R\x04term\x12\"\n" +
-	"\fconflictTerm\x18\x03 \x01(\x03R\fconflictTerm\x12$\n" +
-	"\rconflictIndex\x18\x04 \x01(\x03R\rconflictIndex2\x9c\x01\n" +
-	"\x04Raft\x12L\n" +
-	"\rAppendEntries\x12\x1c.raftpb.AppendEntriesRequest\x1a\x1d.raftpb.AppendEntriesResponse\x12F\n" +
-	"\vRequestVote\x12\x1a.raftpb.RequestVoteRequest\x1a\x1b.raftpb.RequestVoteResponseB%Z#github.com/zbchi/linkv/proto/raftpbb\x06proto3"
+	"rejectHint\x18\n" +
+	" \x01(\x04R\n" +
+	"rejectHint\"f\n" +
+	"\x04Type\x12\n" +
+	"\n" +
+	"\x06MsgHup\x10\x00\x12\v\n" +
+	"\aMsgBeat\x10\x01\x12\n" +
+	"\n" +
+	"\x06MsgApp\x10\x02\x12\x0e\n" +
+	"\n" +
+	"MsgAppResp\x10\x03\x12\v\n" +
+	"\aMsgVote\x10\x04\x12\x0f\n" +
+	"\vMsgVoteResp\x10\x05\x12\v\n" +
+	"\aMsgSnap\x10\x0620\n" +
+	"\x04Raft\x12(\n" +
+	"\x04Step\x12\x0f.raftpb.Message\x1a\x0f.raftpb.MessageB%Z#github.com/zbchi/linkv/proto/raftpbb\x06proto3"
 
 var (
 	file_raftpb_raftpb_proto_rawDescOnce sync.Once
@@ -400,25 +307,23 @@ func file_raftpb_raftpb_proto_rawDescGZIP() []byte {
 	return file_raftpb_raftpb_proto_rawDescData
 }
 
-var file_raftpb_raftpb_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_raftpb_raftpb_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_raftpb_raftpb_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_raftpb_raftpb_proto_goTypes = []any{
-	(*RequestVoteRequest)(nil),    // 0: raftpb.RequestVoteRequest
-	(*RequestVoteResponse)(nil),   // 1: raftpb.RequestVoteResponse
-	(*LogEntry)(nil),              // 2: raftpb.LogEntry
-	(*AppendEntriesRequest)(nil),  // 3: raftpb.AppendEntriesRequest
-	(*AppendEntriesResponse)(nil), // 4: raftpb.AppendEntriesResponse
+	(Message_Type)(0), // 0: raftpb.Message.Type
+	(*Entry)(nil),     // 1: raftpb.Entry
+	(*Message)(nil),   // 2: raftpb.Message
 }
 var file_raftpb_raftpb_proto_depIdxs = []int32{
-	2, // 0: raftpb.AppendEntriesRequest.entries:type_name -> raftpb.LogEntry
-	3, // 1: raftpb.Raft.AppendEntries:input_type -> raftpb.AppendEntriesRequest
-	0, // 2: raftpb.Raft.RequestVote:input_type -> raftpb.RequestVoteRequest
-	4, // 3: raftpb.Raft.AppendEntries:output_type -> raftpb.AppendEntriesResponse
-	1, // 4: raftpb.Raft.RequestVote:output_type -> raftpb.RequestVoteResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: raftpb.Message.type:type_name -> raftpb.Message.Type
+	1, // 1: raftpb.Message.entries:type_name -> raftpb.Entry
+	2, // 2: raftpb.Raft.Step:input_type -> raftpb.Message
+	2, // 3: raftpb.Raft.Step:output_type -> raftpb.Message
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_raftpb_raftpb_proto_init() }
@@ -431,13 +336,14 @@ func file_raftpb_raftpb_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_raftpb_raftpb_proto_rawDesc), len(file_raftpb_raftpb_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_raftpb_raftpb_proto_goTypes,
 		DependencyIndexes: file_raftpb_raftpb_proto_depIdxs,
+		EnumInfos:         file_raftpb_raftpb_proto_enumTypes,
 		MessageInfos:      file_raftpb_raftpb_proto_msgTypes,
 	}.Build()
 	File_raftpb_raftpb_proto = out.File
