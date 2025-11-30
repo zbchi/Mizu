@@ -21,21 +21,21 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Message_Type int32
+type Type int32
 
 const (
-	Message_MsgHup      Message_Type = 0
-	Message_MsgBeat     Message_Type = 1
-	Message_MsgApp      Message_Type = 2
-	Message_MsgAppResp  Message_Type = 3
-	Message_MsgVote     Message_Type = 4
-	Message_MsgVoteResp Message_Type = 5
-	Message_MsgSnap     Message_Type = 6
+	Type_MsgHup      Type = 0
+	Type_MsgBeat     Type = 1
+	Type_MsgApp      Type = 2
+	Type_MsgAppResp  Type = 3
+	Type_MsgVote     Type = 4
+	Type_MsgVoteResp Type = 5
+	Type_MsgSnap     Type = 6
 )
 
-// Enum value maps for Message_Type.
+// Enum value maps for Type.
 var (
-	Message_Type_name = map[int32]string{
+	Type_name = map[int32]string{
 		0: "MsgHup",
 		1: "MsgBeat",
 		2: "MsgApp",
@@ -44,7 +44,7 @@ var (
 		5: "MsgVoteResp",
 		6: "MsgSnap",
 	}
-	Message_Type_value = map[string]int32{
+	Type_value = map[string]int32{
 		"MsgHup":      0,
 		"MsgBeat":     1,
 		"MsgApp":      2,
@@ -55,31 +55,31 @@ var (
 	}
 )
 
-func (x Message_Type) Enum() *Message_Type {
-	p := new(Message_Type)
+func (x Type) Enum() *Type {
+	p := new(Type)
 	*p = x
 	return p
 }
 
-func (x Message_Type) String() string {
+func (x Type) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (Message_Type) Descriptor() protoreflect.EnumDescriptor {
+func (Type) Descriptor() protoreflect.EnumDescriptor {
 	return file_raftpb_raftpb_proto_enumTypes[0].Descriptor()
 }
 
-func (Message_Type) Type() protoreflect.EnumType {
+func (Type) Type() protoreflect.EnumType {
 	return &file_raftpb_raftpb_proto_enumTypes[0]
 }
 
-func (x Message_Type) Number() protoreflect.EnumNumber {
+func (x Type) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use Message_Type.Descriptor instead.
-func (Message_Type) EnumDescriptor() ([]byte, []int) {
-	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{1, 0}
+// Deprecated: Use Type.Descriptor instead.
+func (Type) EnumDescriptor() ([]byte, []int) {
+	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{0}
 }
 
 type Entry struct {
@@ -144,7 +144,7 @@ func (x *Entry) GetData() []byte {
 
 type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          Message_Type           `protobuf:"varint,1,opt,name=type,proto3,enum=raftpb.Message_Type" json:"type,omitempty"`
+	Type          Type                   `protobuf:"varint,1,opt,name=type,proto3,enum=raftpb.Type" json:"type,omitempty"`
 	From          uint64                 `protobuf:"varint,2,opt,name=from,proto3" json:"from,omitempty"`
 	To            uint64                 `protobuf:"varint,3,opt,name=to,proto3" json:"to,omitempty"`
 	Term          uint64                 `protobuf:"varint,4,opt,name=term,proto3" json:"term,omitempty"`
@@ -188,11 +188,11 @@ func (*Message) Descriptor() ([]byte, []int) {
 	return file_raftpb_raftpb_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *Message) GetType() Message_Type {
+func (x *Message) GetType() Type {
 	if x != nil {
 		return x.Type
 	}
-	return Message_MsgHup
+	return Type_MsgHup
 }
 
 func (x *Message) GetFrom() uint64 {
@@ -266,9 +266,9 @@ const file_raftpb_raftpb_proto_rawDesc = "" +
 	"\x05Entry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\"\x82\x03\n" +
-	"\aMessage\x12(\n" +
-	"\x04type\x18\x01 \x01(\x0e2\x14.raftpb.Message.TypeR\x04type\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\"\x92\x02\n" +
+	"\aMessage\x12 \n" +
+	"\x04type\x18\x01 \x01(\x0e2\f.raftpb.TypeR\x04type\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\x04R\x04from\x12\x0e\n" +
 	"\x02to\x18\x03 \x01(\x04R\x02to\x12\x12\n" +
 	"\x04term\x18\x04 \x01(\x04R\x04term\x12\x18\n" +
@@ -280,7 +280,7 @@ const file_raftpb_raftpb_proto_rawDesc = "" +
 	"\n" +
 	"rejectHint\x18\n" +
 	" \x01(\x04R\n" +
-	"rejectHint\"f\n" +
+	"rejectHint*f\n" +
 	"\x04Type\x12\n" +
 	"\n" +
 	"\x06MsgHup\x10\x00\x12\v\n" +
@@ -310,12 +310,12 @@ func file_raftpb_raftpb_proto_rawDescGZIP() []byte {
 var file_raftpb_raftpb_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_raftpb_raftpb_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_raftpb_raftpb_proto_goTypes = []any{
-	(Message_Type)(0), // 0: raftpb.Message.Type
-	(*Entry)(nil),     // 1: raftpb.Entry
-	(*Message)(nil),   // 2: raftpb.Message
+	(Type)(0),       // 0: raftpb.Type
+	(*Entry)(nil),   // 1: raftpb.Entry
+	(*Message)(nil), // 2: raftpb.Message
 }
 var file_raftpb_raftpb_proto_depIdxs = []int32{
-	0, // 0: raftpb.Message.type:type_name -> raftpb.Message.Type
+	0, // 0: raftpb.Message.type:type_name -> raftpb.Type
 	1, // 1: raftpb.Message.entries:type_name -> raftpb.Entry
 	2, // 2: raftpb.Raft.Step:input_type -> raftpb.Message
 	2, // 3: raftpb.Raft.Step:output_type -> raftpb.Message

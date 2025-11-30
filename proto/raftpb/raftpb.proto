@@ -10,8 +10,7 @@ message Entry{
     bytes data=3;
 }
 
-message Message{
-    enum Type{
+enum Type{
         MsgHup=0;
         MsgBeat=1;
         MsgApp=2;
@@ -20,6 +19,9 @@ message Message{
         MsgVoteResp=5;
         MsgSnap=6;
     }
+
+
+message Message{
 
     Type type=1;
     uint64 from=2;
