@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"log/slog"
 	"math/rand"
 
 	"github.com/zbchi/linkv/proto/raftpb"
@@ -63,28 +64,9 @@ func (r *Raft) stepFollower(m raftpb.Message) error {
 	case raftpb.Type_MsgHup:
 		return r.campaign()
 	case raftpb.Type_MsgVote:
-		granted := r.grantVote(m)
-		r.msgs = append(r.msgs, raftpb.Message{
-			Type:   raftpb.Type_MsgVoteResp,
-			From:   r.id,
-			To:     m.From,
-			Term:   r.hardState.Term,
-			Reject: !granted,
-		})
-		return nil
+		return r.vote(m)
 	case raftpb.Type_MsgApp:
-		ok := r.handleAppend(m)
-		r.msgs = append(r.msgs, raftpb.Message{
-			Type:   raftpb.Type_MsgAppResp,
-			From:   r.id,
-			To:     m.From,
-			Term:   r.hardState.Term,
-			Reject: !ok,
-		})
-		if ok {
-			r.lead = m.From
-		}
-		return nil
+		return r.append(m)
 	}
 	return nil
 }
@@ -94,40 +76,58 @@ func (r *Raft) stepCandidate(m raftpb.Message) error {
 	case raftpb.Type_MsgHup:
 		return r.campaign()
 	case raftpb.Type_MsgVoteResp:
-		r.votes[m.From] = !m.Reject
-		won, lost := r.checkVotes()
-		if won {
-			r.becomeLeader()
-		}
-		if lost {
-			r.becomeFollower(r.hardState.Term, 0)
-		}
-		return nil
+		return r.handleVoteResp(m)
 	case raftpb.Type_MsgVote:
-		granted := r.grantVote(m)
-		r.msgs = append(r.msgs, raftpb.Message{
-			Type:   raftpb.Type_MsgVoteResp,
-			From:   r.id,
-			To:     m.From,
-			Term:   r.hardState.Term,
-			Reject: !granted,
-		})
-		return nil
+		return r.vote(m)
 	case raftpb.Type_MsgApp:
-		ok := r.handleAppend(m)
-		r.msgs = append(r.msgs, raftpb.Message{
-			Type:   raftpb.Type_MsgAppResp,
-			From:   r.id,
-			To:     m.From,
-			Term:   r.hardState.Term,
-			Reject: !ok,
-		})
-		return nil
+		return r.append(m)
 	}
 	return nil
 }
 
 func (r *Raft) stepLeader(m raftpb.Message) error {
+	return nil
+}
+
+func (r *Raft) append(m raftpb.Message) error {
+	ok := r.handleAppend(m)
+	r.msgs = append(r.msgs, raftpb.Message{
+		Type:   raftpb.Type_MsgAppResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		Reject: !ok,
+	})
+	if ok {
+		r.lead = m.From
+	}
+	return nil
+}
+
+func (r *Raft) handleVoteResp(m raftpb.Message) error {
+	r.votes[m.From] = !m.Reject
+	slog.Info("got vote", slog.Bool("isVote", !m.Reject),
+		slog.Int("from", int(m.From)),
+		slog.Int("fromTerm", int(m.Term)), slog.Int("id", int(r.id)))
+	won, lost := r.checkVotes()
+	if won {
+		r.becomeLeader()
+	}
+	if lost {
+		r.becomeFollower(r.hardState.Term, 0)
+	}
+	return nil
+}
+
+func (r *Raft) vote(m raftpb.Message) error {
+	granted := r.grantVote(m)
+	r.msgs = append(r.msgs, raftpb.Message{
+		Type:   raftpb.Type_MsgVoteResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		Reject: !granted,
+	})
 	return nil
 }
 
