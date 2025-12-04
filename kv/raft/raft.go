@@ -66,7 +66,7 @@ func (r *Raft) stepFollower(m raftpb.Message) error {
 	case raftpb.Type_MsgVote:
 		return r.vote(m)
 	case raftpb.Type_MsgApp:
-		return r.append(m)
+		return r.handleAppend(m)
 	}
 	return nil
 }
@@ -80,26 +80,15 @@ func (r *Raft) stepCandidate(m raftpb.Message) error {
 	case raftpb.Type_MsgVote:
 		return r.vote(m)
 	case raftpb.Type_MsgApp:
-		return r.append(m)
+		return r.handleAppend(m)
 	}
 	return nil
 }
 
 func (r *Raft) stepLeader(m raftpb.Message) error {
-	return nil
-}
-
-func (r *Raft) append(m raftpb.Message) error {
-	ok := r.handleAppend(m)
-	r.msgs = append(r.msgs, raftpb.Message{
-		Type:   raftpb.Type_MsgAppResp,
-		From:   r.id,
-		To:     m.From,
-		Term:   r.hardState.Term,
-		Reject: !ok,
-	})
-	if ok {
-		r.lead = m.From
+	switch m.Type {
+	case raftpb.Type_MsgAppResp:
+		return r.handleAppResp(m)
 	}
 	return nil
 }
@@ -119,37 +108,123 @@ func (r *Raft) handleVoteResp(m raftpb.Message) error {
 	return nil
 }
 
-func (r *Raft) vote(m raftpb.Message) error {
-	granted := r.grantVote(m)
-	r.msgs = append(r.msgs, raftpb.Message{
-		Type:   raftpb.Type_MsgVoteResp,
-		From:   r.id,
-		To:     m.From,
-		Term:   r.hardState.Term,
-		Reject: !granted,
-	})
+func (r *Raft) handleAppResp(m raftpb.Message) error {
+	if !m.Reject { //不冲突
+		r.prs.prs[m.From].Match = m.LogIndex
+		r.prs.prs[m.From].Next = min(m.LogIndex+1, uint64(len(r.raftLog.entries)))
+		//slog.Info("updateNext", "next", m.LogIndex+1, "sub", m.From)
+	} else { //冲突
+		if m.LogTerm == 0 { //无冲突任期
+			r.prs.prs[m.From].Next = max(m.LogIndex, 0)
+		} else { //有冲突任期
+			found := -1
+			for i := len(r.raftLog.entries) - 1; i >= 0; i-- {
+				if r.raftLog.entries[i].Term == m.LogTerm {
+					found = i
+					break
+				}
+			}
+			if found == -1 {
+				r.prs.prs[m.From].Next = m.LogIndex
+			} else {
+				r.prs.prs[m.From].Next = uint64(found + 1)
+			}
+		}
+	}
+	if r.prs.prs[m.From].Match >= r.prs.prs[m.From].Next {
+		r.prs.prs[m.From].Match = r.prs.prs[m.From].Next - 1
+	}
+	r.advanceCommitIndex()
+
 	return nil
 }
 
-func (r *Raft) handleAppend(m raftpb.Message) bool {
-	if r.hardState.Term > m.Term {
-		return false
+func (r *Raft) handleAppend(m raftpb.Message) error {
+	reply := raftpb.Message{
+		Type: raftpb.Type_MsgAppResp,
+		From: r.id,
+		To:   m.From,
+		Term: r.hardState.Term,
 	}
+
+	if r.hardState.Term > m.Term {
+		reply.Reject = true
+		r.send(reply)
+		return nil
+	}
+
+	reply.LogTerm = 0 //default 0
+
+	//preLogIndex > len entries
+	if m.LogIndex >= uint64(len(r.raftLog.entries)) {
+		reply.Reject = true
+		reply.LogIndex = uint64(len(r.raftLog.entries))
+		r.send(reply)
+		return nil
+	}
+
 	r.becomeFollower(m.Term, m.From)
-	return true
+
+	//not match preLogTerm
+	if m.LogTerm != r.raftLog.entries[m.LogIndex].Term {
+		reply.Reject = true
+		reply.LogTerm = r.raftLog.entries[m.LogIndex].Term //conflictTerm
+
+		first := int(m.LogIndex)
+		for first >= 0 && r.raftLog.entries[first].Term == reply.LogTerm {
+			first--
+		}
+		reply.LogIndex = uint64(first + 1) //conflictIndex
+
+		r.raftLog.entries = r.raftLog.entries[:reply.LogIndex]
+		if r.raftLog.commitIndex >= uint64(len(r.raftLog.entries)) {
+			r.raftLog.commitIndex = uint64(len(r.raftLog.entries)) - 1
+		}
+
+		r.send(reply)
+		return nil
+	}
+
+	if len(m.Entries) > 0 {
+		newEntries := derefEntries(m.Entries)
+		r.raftLog.entries = append(r.raftLog.entries[:m.LogIndex+1], newEntries...)
+	}
+	if m.Commit > r.raftLog.commitIndex {
+		r.raftLog.commitIndex = min(m.Commit, uint64(len(r.raftLog.entries)-1))
+		r.applyLog()
+	}
+
+	if len(m.Entries) > 0 {
+		slog.Info("recieve", "commitIndex", r.raftLog.commitIndex, "me", int(r.id))
+	}
+
+	reply.Reject = false
+	reply.LogIndex = r.raftLog.LastIndex() //matchIndex
+	r.send(reply)
+	return nil
+}
+
+func (r *Raft) send(m raftpb.Message) {
+	if m.Type == raftpb.Type_MsgAppResp && m.Reject == true {
+		slog.Info("rejectAppend", "conflictIndex", m.LogIndex, "me", r.id)
+	}
+	r.msgs = append(r.msgs, m)
 }
 
 func (r *Raft) campaign() error {
 	r.becomeCandidate()
+	slog.Info("start campaign", slog.Int("msgsize", len(r.msgs)), slog.Int("term", int(r.hardState.Term)), slog.Int("me", int(r.id)))
 	for id := range r.prs.prs {
 		if id == r.id {
 			continue
 		}
 		r.msgs = append(r.msgs, raftpb.Message{
-			Type: raftpb.Type_MsgVote,
-			From: r.id,
-			To:   id,
-			Term: r.hardState.Term,
+			Type:     raftpb.Type_MsgVote,
+			From:     r.id,
+			To:       id,
+			Term:     r.hardState.Term,
+			LogIndex: r.raftLog.LastIndex(),
+			LogTerm:  r.raftLog.LastTerm(),
 		})
 	}
 	return nil
@@ -162,9 +237,32 @@ func (r *Raft) grantVote(m raftpb.Message) bool {
 	if r.hardState.Vote != 0 && r.hardState.Vote != m.From {
 		return false
 	}
+	lastTerm := r.raftLog.LastTerm()
+	lastIndex := r.raftLog.LastIndex()
+	if lastTerm > m.LogTerm {
+		return false
+	}
+	if lastTerm == m.LogTerm && lastIndex > m.LogIndex {
+		return false
+	}
 	r.electionElapsed = 0
 	r.hardState.Vote = m.From
 	return true
+}
+
+func (r *Raft) vote(m raftpb.Message) error {
+	granted := r.grantVote(m)
+	r.msgs = append(r.msgs, raftpb.Message{
+		Type:   raftpb.Type_MsgVoteResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		Reject: !granted,
+	})
+	if granted {
+		r.becomeFollower(m.Term, 0)
+	}
+	return nil
 }
 
 func (r *Raft) becomeFollower(term, lead uint64) {
@@ -188,24 +286,46 @@ func (r *Raft) becomeCandidate() {
 }
 
 func (r *Raft) becomeLeader() {
+	slog.Info("become leader", "commitIndex", r.raftLog.commitIndex,
+		"logsize", len(r.raftLog.entries), "term", r.hardState.Term,
+		"me", int(r.id))
 	r.state = StateLeader
 	r.lead = r.id
 	r.heartbeatElapsed = 0
+	slog.Info("init next", "value", r.raftLog.LastIndex()+1)
+	for _, prs := range r.prs.prs {
+		prs.Match = 0
+		prs.Next = r.raftLog.LastIndex() + 1
+	}
 	r.bcastHeartBeat()
 }
 
 func (r *Raft) bcastHeartBeat() {
 	for id := range r.prs.prs {
+		if r.state != StateLeader {
+			return
+		}
 		if id == r.id {
 			continue
 		}
+
+		//slog.Info("send", "next", r.prs.prs[id].Next, "to", id, "me", r.id)
 		m := raftpb.Message{
 			Type: raftpb.Type_MsgApp,
 			From: r.id,
 			To:   id,
 			Term: r.hardState.Term,
+
+			Entries:  refEntries(r.raftLog.entries[r.prs.prs[id].Next:]),
+			Commit:   r.raftLog.commitIndex,
+			LogIndex: r.preLogIndex(id),
+			LogTerm:  r.preLogTerm(id),
 		}
-		r.msgs = append(r.msgs, m)
+
+		if len(m.Entries) > 0 {
+			//slog.Info("send", slog.Int("next", int(r.prs.prs[id].Next)))
+		}
+		r.send(m)
 	}
 }
 
@@ -226,4 +346,28 @@ func (r *Raft) checkVotes() (won, lost bool) {
 		return false, true
 	}
 	return false, false
+}
+
+func (r *Raft) advanceCommitIndex() {
+	mci := r.prs.Committed()
+	if r.raftLog.matchCommitTerm(mci, r.hardState.Term) {
+		r.raftLog.commitTo(mci)
+		r.applyLog()
+	}
+}
+
+func (r *Raft) applyLog() {
+	/*for r.raftLog.appliedIndex < r.raftLog.commitIndex {
+		r.raftLog.appliedIndex++
+		idx := r.raftLog.appliedIndex
+		entry := r.raftLog.entries[idx]
+
+		msg := raftapi.ApplyMsg{
+			CommandValid: true,
+			Command:      entry.Data,
+			CommandIndex: int(entry.Index),
+		}
+		//slog.Info("apply", slog.Int("index", msg.CommandIndex), slog.Int("me", int(r.id)))
+		r.applyCh <- msg
+	}*/
 }

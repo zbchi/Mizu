@@ -18,7 +18,7 @@ enum Type{
         MsgVote=4;
         MsgVoteResp=5;
         MsgSnap=6;
-    }
+}
 
 
 message Message{
