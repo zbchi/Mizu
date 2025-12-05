@@ -101,6 +101,35 @@ func (r *Raft) commitTo(to uint64) {
 	}
 }
 
+func (r *Raft) compactTo(to uint64, term uint64) {
+	if to <= r.raftLog.offset {
+		return
+	}
+
+	last := r.raftLog.LastIndex()
+	if to > last {
+		to = last
+	}
+
+	sentinel := raftpb.Entry{
+		Index: to,
+		Term:  term,
+	}
+	rest := r.raftLog.Slice(to+1, last+1)
+
+	newEntries := []raftpb.Entry{}
+	newEntries = append(newEntries, sentinel)
+	newEntries = append(newEntries, rest...)
+
+	r.raftLog.entries = newEntries
+	r.raftLog.offset = to
+}
+
+func (r *Raft) restore(snap raftpb.Snapshot) {
+	r.raftLog.offset = snap.Index
+	r.raftLog.entries = []raftpb.Entry{{Term: snap.Term, Index: snap.Index}}
+}
+
 // matchCommitTerm 检查指定索引的日志条目的任期是否匹配
 func (l *RaftLog) matchCommitTerm(index uint64, term uint64) bool {
 	if index < uint64(len(l.entries)) && l.entries[index].Term == term {

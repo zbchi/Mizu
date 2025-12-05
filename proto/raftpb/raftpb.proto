@@ -18,8 +18,8 @@ enum Type{
         MsgVote=4;
         MsgVoteResp=5;
         MsgSnap=6;
+        MsgSnapResp=7;
 }
-
 
 message Message{
 
@@ -33,9 +33,27 @@ message Message{
     repeated Entry entries=8;
     bool reject=9;
     uint64 rejectHint=10;
+
+    Snapshot snapshot=11;
 }
 
+message Snapshot{
+    bytes data=1;
+    uint64 index=2;
+    uint64 term=3;
+}
 
 service Raft{
     rpc Step(Message)returns(Message);
+}
+
+
+//snapshot data marshel to proto
+message KvPair{
+    bytes key=1;
+    bytes value=2;
+}
+
+message SnapshotData{
+    repeated KvPair kvs=1;
 }

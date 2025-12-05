@@ -91,6 +91,8 @@ func (r *Raft) stepLeader(m raftpb.Message) error {
 	switch m.Type {
 	case raftpb.Type_MsgAppResp:
 		return r.handleAppResp(m)
+	case raftpb.Type_MsgSnapResp:
+		return r.handleSnapshotResp(m)
 	}
 	return nil
 }
@@ -215,6 +217,49 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 	return nil
 }
 
+func (r *Raft) handleSnapshot(m raftpb.Message) error {
+	reply := raftpb.Message{
+		Type: raftpb.Type_MsgSnapResp,
+		From: r.id,
+		To:   m.From,
+		Term: r.hardState.Term,
+	}
+
+	if r.hardState.Term > m.Term {
+		reply.Reject = true
+		r.send(reply)
+		return nil
+	}
+
+	if r.raftLog.offset >= m.Snapshot.Index {
+		reply.Reject = true
+		r.send(reply)
+		return nil
+	}
+
+	r.becomeFollower(m.Term, m.From)
+
+	r.compactTo(m.Snapshot.Index, m.Snapshot.Term)
+	r.hardState.CommitIndex = r.raftLog.offset
+	r.raftLog.appliedIndex = r.raftLog.offset
+	r.storage.SaveSnapshot(*m.Snapshot)
+	r.applySnapshot()
+
+	reply.Reject = false
+	r.send(reply)
+	return nil
+}
+
+func (r *Raft) handleSnapshotResp(m raftpb.Message) error {
+	if m.Reject == true {
+		return nil
+	}
+
+	r.prs.prs[m.From].Next = r.raftLog.offset + 1
+	r.prs.prs[m.From].Match = r.raftLog.offset
+	return nil
+}
+
 func (r *Raft) send(m raftpb.Message) {
 	if m.Type == raftpb.Type_MsgAppResp && m.Reject == true {
 		slog.Info("rejectAppend", "conflictIndex", m.LogIndex, "me", r.id)
@@ -326,6 +371,11 @@ func (r *Raft) bcastHeartBeat() {
 			continue
 		}
 
+		if r.prs.prs[id].Next <= r.raftLog.offset {
+			r.sendSnapshot(id)
+			continue
+		}
+
 		//slog.Info("send", "next", r.prs.prs[id].Next, "to", id, "me", r.id)
 		m := raftpb.Message{
 			Type: raftpb.Type_MsgApp,
@@ -344,6 +394,23 @@ func (r *Raft) bcastHeartBeat() {
 		}
 		r.send(m)
 	}
+}
+
+func (r *Raft) sendSnapshot(id uint64) {
+	if r.state != StateLeader {
+		return
+	}
+
+	snapshot, _ := r.storage.LoadSnapshot()
+	m := raftpb.Message{
+		Type: raftpb.Type_MsgSnap,
+		From: r.id,
+		To:   id,
+		Term: r.hardState.Term,
+
+		Snapshot: &snapshot,
+	}
+	r.send(m)
 }
 
 func (r *Raft) checkVotes() (won, lost bool) {
@@ -373,6 +440,32 @@ func (r *Raft) advanceCommitIndex() {
 	}
 }
 
+func (r *Raft) snapshot(index uint64) {
+	if index <= r.raftLog.offset {
+		return
+	}
+	r.compactTo(index, r.raftLog.Term(index))
+	r.hardState.CommitIndex = max(index, r.hardState.CommitIndex)
+	r.raftLog.appliedIndex = max(index, r.raftLog.appliedIndex)
+
+	if r.state == StateLeader {
+		for _, prs := range r.prs.prs {
+			if prs.Next <= r.raftLog.offset {
+				prs.Next = r.raftLog.offset + 1
+			}
+			if prs.Match < r.raftLog.offset {
+				prs.Match = r.raftLog.offset
+			}
+		}
+	}
+	sn := raftpb.Snapshot{
+		Term:  r.raftLog.Term(index),
+		Index: index,
+		Data:  r.storage.MakeSnapshotData(),
+	}
+	r.storage.SaveSnapshot(sn)
+}
+
 func (r *Raft) applyLog() {
 	/*for r.raftLog.appliedIndex < r.hardState.CommitIndex {
 		r.raftLog.appliedIndex++
@@ -387,4 +480,8 @@ func (r *Raft) applyLog() {
 		//slog.Info("apply", slog.Int("index", msg.CommandIndex), slog.Int("me", int(r.id)))
 		r.applyCh <- msg
 	}*/
+}
+
+func (r *Raft) applySnapshot() {
+
 }
