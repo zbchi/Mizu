@@ -25,6 +25,8 @@ type Raft struct {
 	heartbeatTimeout int
 
 	votes map[uint64]bool
+
+	//storage RaftStroage
 }
 
 func (r *Raft) Tick() {
@@ -111,23 +113,15 @@ func (r *Raft) handleVoteResp(m raftpb.Message) error {
 func (r *Raft) handleAppResp(m raftpb.Message) error {
 	if !m.Reject { //不冲突
 		r.prs.prs[m.From].Match = m.LogIndex
-		r.prs.prs[m.From].Next = min(m.LogIndex+1, uint64(len(r.raftLog.entries)))
-		//slog.Info("updateNext", "next", m.LogIndex+1, "sub", m.From)
+		r.prs.prs[m.From].Next = min(m.LogIndex+1, r.raftLog.LastIndex()+1) //slog.Info("updateNext", "next", m.LogIndex+1, "sub", m.From)
 	} else { //冲突
 		if m.LogTerm == 0 { //无冲突任期
 			r.prs.prs[m.From].Next = max(m.LogIndex, 0)
 		} else { //有冲突任期
-			found := -1
-			for i := len(r.raftLog.entries) - 1; i >= 0; i-- {
-				if r.raftLog.entries[i].Term == m.LogTerm {
-					found = i
-					break
-				}
-			}
-			if found == -1 {
-				r.prs.prs[m.From].Next = m.LogIndex
+			if found, ok := r.raftLog.findLastIndexOfTerm(m.LogTerm); ok {
+				r.prs.prs[m.From].Next = found + 1
 			} else {
-				r.prs.prs[m.From].Next = uint64(found + 1)
+				r.prs.prs[m.From].Next = m.LogIndex
 			}
 		}
 	}
@@ -137,6 +131,18 @@ func (r *Raft) handleAppResp(m raftpb.Message) error {
 	r.advanceCommitIndex()
 
 	return nil
+}
+
+func (l *RaftLog) findLastIndexOfTerm(term uint64) (uint64, bool) {
+	for i := l.LastIndex(); i >= l.FirstIndex(); i-- {
+		if l.Term(i) == term {
+			return i, true
+		}
+		if i == l.FirstIndex() {
+			break
+		}
+	}
+	return 0, false
 }
 
 func (r *Raft) handleAppend(m raftpb.Message) error {
@@ -154,11 +160,12 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 	}
 
 	reply.LogTerm = 0 //default 0
+	lastIndex := r.raftLog.LastIndex()
 
 	//preLogIndex > len entries
-	if m.LogIndex >= uint64(len(r.raftLog.entries)) {
+	if m.LogIndex > lastIndex {
 		reply.Reject = true
-		reply.LogIndex = uint64(len(r.raftLog.entries))
+		reply.LogIndex = lastIndex + 1
 		r.send(reply)
 		return nil
 	}
@@ -166,19 +173,20 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 	r.becomeFollower(m.Term, m.From)
 
 	//not match preLogTerm
-	if m.LogTerm != r.raftLog.entries[m.LogIndex].Term {
+	if m.LogTerm != r.raftLog.Term(m.LogIndex) {
 		reply.Reject = true
-		reply.LogTerm = r.raftLog.entries[m.LogIndex].Term //conflictTerm
+		reply.LogTerm = r.raftLog.Term(m.LogIndex) //conflictTerm
 
-		first := int(m.LogIndex)
-		for first >= 0 && r.raftLog.entries[first].Term == reply.LogTerm {
+		first := m.LogIndex
+		for first > r.raftLog.FirstIndex() && r.raftLog.Term(first-1) == reply.LogTerm {
 			first--
 		}
-		reply.LogIndex = uint64(first + 1) //conflictIndex
+		reply.LogIndex = first //conflictIndex
 
-		r.raftLog.entries = r.raftLog.entries[:reply.LogIndex]
-		if r.raftLog.commitIndex >= uint64(len(r.raftLog.entries)) {
-			r.raftLog.commitIndex = uint64(len(r.raftLog.entries)) - 1
+		cut := reply.LogIndex - r.raftLog.offset
+		r.raftLog.entries = r.raftLog.entries[:cut]
+		if r.hardState.CommitIndex > r.raftLog.LastIndex() {
+			r.commitTo(r.raftLog.LastIndex())
 		}
 
 		r.send(reply)
@@ -186,16 +194,17 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 	}
 
 	if len(m.Entries) > 0 {
+		pos := m.LogIndex - r.raftLog.offset
 		newEntries := derefEntries(m.Entries)
-		r.raftLog.entries = append(r.raftLog.entries[:m.LogIndex+1], newEntries...)
+		r.raftLog.entries = append(r.raftLog.entries[:pos+1], newEntries...)
 	}
-	if m.Commit > r.raftLog.commitIndex {
-		r.raftLog.commitIndex = min(m.Commit, uint64(len(r.raftLog.entries)-1))
+	if m.Commit > r.hardState.CommitIndex {
+		r.commitTo(min(m.Commit, r.raftLog.LastIndex()))
 		r.applyLog()
 	}
 
 	if len(m.Entries) > 0 {
-		slog.Info("recieve", "commitIndex", r.raftLog.commitIndex, "me", int(r.id))
+		slog.Info("recieve", "commitIndex", r.hardState.CommitIndex, "me", int(r.id))
 	}
 
 	reply.Reject = false
@@ -286,7 +295,7 @@ func (r *Raft) becomeCandidate() {
 }
 
 func (r *Raft) becomeLeader() {
-	slog.Info("become leader", "commitIndex", r.raftLog.commitIndex,
+	slog.Info("become leader", "commitIndex", r.hardState.CommitIndex,
 		"logsize", len(r.raftLog.entries), "term", r.hardState.Term,
 		"me", int(r.id))
 	r.state = StateLeader
@@ -316,8 +325,8 @@ func (r *Raft) bcastHeartBeat() {
 			To:   id,
 			Term: r.hardState.Term,
 
-			Entries:  refEntries(r.raftLog.entries[r.prs.prs[id].Next:]),
-			Commit:   r.raftLog.commitIndex,
+			Entries:  refEntries(r.raftLog.Slice(r.prs.prs[id].Next, r.raftLog.LastIndex()+1)),
+			Commit:   r.hardState.CommitIndex,
 			LogIndex: r.preLogIndex(id),
 			LogTerm:  r.preLogTerm(id),
 		}
@@ -351,13 +360,13 @@ func (r *Raft) checkVotes() (won, lost bool) {
 func (r *Raft) advanceCommitIndex() {
 	mci := r.prs.Committed()
 	if r.raftLog.matchCommitTerm(mci, r.hardState.Term) {
-		r.raftLog.commitTo(mci)
+		r.commitTo(mci)
 		r.applyLog()
 	}
 }
 
 func (r *Raft) applyLog() {
-	/*for r.raftLog.appliedIndex < r.raftLog.commitIndex {
+	/*for r.raftLog.appliedIndex < r.hardState.CommitIndex {
 		r.raftLog.appliedIndex++
 		idx := r.raftLog.appliedIndex
 		entry := r.raftLog.entries[idx]

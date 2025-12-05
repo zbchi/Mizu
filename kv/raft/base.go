@@ -15,14 +15,14 @@ const (
 )
 
 type HardState struct {
-	Term   uint64
-	Vote   uint64
-	Commit uint64
+	Term        uint64
+	Vote        uint64
+	CommitIndex uint64
 }
 
 type RaftLog struct {
 	entries      []raftpb.Entry
-	commitIndex  uint64
+	offset       uint64
 	appliedIndex uint64
 }
 
@@ -35,12 +35,31 @@ type ProgressTracker struct {
 	prs map[uint64]*Progress
 }
 
+func (l *RaftLog) FirstIndex() uint64 {
+	return l.offset
+}
+
 func (l *RaftLog) LastIndex() uint64 {
-	return uint64(len(l.entries)) - 1
+	return l.offset + uint64(len(l.entries)) - 1
 }
 
 func (l *RaftLog) LastTerm() uint64 {
-	return uint64(l.entries[len(l.entries)-1].Term)
+	return l.entries[len(l.entries)-1].Term
+}
+
+func (l *RaftLog) Term(i uint64) uint64 {
+	if i < l.offset || i > l.LastIndex() {
+		return 0
+	}
+	return l.entries[i-l.offset].Term
+}
+
+func (l *RaftLog) Entry(i uint64) raftpb.Entry {
+	return l.entries[i-l.offset]
+}
+
+func (l *RaftLog) Slice(lo uint64, hi uint64) []raftpb.Entry {
+	return l.entries[lo-l.offset : hi-l.offset]
 }
 
 func (r *Raft) preLogIndex(id uint64) uint64 {
@@ -48,13 +67,12 @@ func (r *Raft) preLogIndex(id uint64) uint64 {
 }
 
 func (r *Raft) preLogTerm(id uint64) uint64 {
-	return r.raftLog.entries[r.preLogIndex(id)].Term
+	return r.raftLog.Term(r.preLogIndex(id))
 }
 
 func (r *Raft) NewRaftLog() *RaftLog {
 	return &RaftLog{
 		entries:      []raftpb.Entry{{Term: 0, Index: 0}},
-		commitIndex:  0,
 		appliedIndex: 0,
 	}
 }
@@ -76,15 +94,15 @@ func (p *ProgressTracker) Committed() uint64 {
 	return mathes[quorum-1]
 }
 
-func (l *RaftLog) commitTo(to uint64) {
-	if to > l.commitIndex {
-		l.commitIndex = to
+func (r *Raft) commitTo(to uint64) {
+	if to > r.hardState.CommitIndex {
+		r.hardState.CommitIndex = to
 	}
 }
 
-// match commit log's term with leader's term
+// matchCommitTerm 检查指定索引的日志条目的任期是否匹配
 func (l *RaftLog) matchCommitTerm(index uint64, term uint64) bool {
-	if l.entries[index].Term == term {
+	if index < uint64(len(l.entries)) && l.entries[index].Term == term {
 		return true
 	}
 	return false
