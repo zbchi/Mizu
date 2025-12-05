@@ -187,7 +187,7 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 
 		cut := reply.LogIndex - r.raftLog.offset
 		r.raftLog.entries = r.raftLog.entries[:cut]
-		r.storage.TruncateFrom(cut)
+		r.storage.TruncateFrom(reply.LogIndex)
 		if r.hardState.CommitIndex > r.raftLog.LastIndex() {
 			r.commitTo(r.raftLog.LastIndex())
 		}
@@ -231,6 +231,12 @@ func (r *Raft) handleSnapshot(m raftpb.Message) error {
 		return nil
 	}
 
+	if m.Snapshot == nil {
+		reply.Reject = true
+		r.send(reply)
+		return nil
+	}
+
 	if r.raftLog.offset >= m.Snapshot.Index {
 		reply.Reject = true
 		r.send(reply)
@@ -239,11 +245,11 @@ func (r *Raft) handleSnapshot(m raftpb.Message) error {
 
 	r.becomeFollower(m.Term, m.From)
 
-	r.compactTo(m.Snapshot.Index, m.Snapshot.Term)
-	r.hardState.CommitIndex = r.raftLog.offset
-	r.raftLog.appliedIndex = r.raftLog.offset
-	r.storage.SaveSnapshot(*m.Snapshot)
-	r.applySnapshot()
+	if err := r.applySnapshot(*m.Snapshot); err != nil {
+		reply.Reject = true
+		r.send(reply)
+		return err
+	}
 
 	reply.Reject = false
 	r.send(reply)
@@ -402,6 +408,9 @@ func (r *Raft) sendSnapshot(id uint64) {
 	}
 
 	snapshot, _ := r.storage.LoadSnapshot()
+	if snapshot.Index == 0 {
+		return
+	}
 	m := raftpb.Message{
 		Type: raftpb.Type_MsgSnap,
 		From: r.id,
@@ -440,13 +449,16 @@ func (r *Raft) advanceCommitIndex() {
 	}
 }
 
-func (r *Raft) snapshot(index uint64) {
+// Snapshot creates a snapshot at the given index and compacts the log.
+// This should be called by the application layer after applying entries.
+func (r *Raft) Snapshot(index uint64) {
 	if index <= r.raftLog.offset {
 		return
 	}
 	r.compactTo(index, r.raftLog.Term(index))
 	r.hardState.CommitIndex = max(index, r.hardState.CommitIndex)
 	r.raftLog.appliedIndex = max(index, r.raftLog.appliedIndex)
+	r.storage.SaveHardState(r.hardState)
 
 	if r.state == StateLeader {
 		for _, prs := range r.prs.prs {
@@ -482,6 +494,20 @@ func (r *Raft) applyLog() {
 	}*/
 }
 
-func (r *Raft) applySnapshot() {
+func (r *Raft) applySnapshot(sn raftpb.Snapshot) error {
+	if sn.Index == 0 {
+		return nil
+	}
 
+	// persist snapshot metadata and state machine data first
+	if err := r.storage.SaveSnapshot(sn); err != nil {
+		return err
+	}
+	if err := r.storage.ApplySnapshotData(sn.Data); err != nil {
+		return err
+	}
+
+	// restore in-memory raft state from snapshot
+	r.restore(sn)
+	return r.storage.SaveHardState(r.hardState)
 }

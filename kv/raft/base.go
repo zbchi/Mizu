@@ -126,14 +126,22 @@ func (r *Raft) compactTo(to uint64, term uint64) {
 }
 
 func (r *Raft) restore(snap raftpb.Snapshot) {
+	// rebuild in-memory log state
 	r.raftLog.offset = snap.Index
 	r.raftLog.entries = []raftpb.Entry{{Term: snap.Term, Index: snap.Index}}
+
+	// update raft state from snapshot
+	r.hardState.CommitIndex = max(snap.Index, r.hardState.CommitIndex)
+	if snap.Term > r.hardState.Term {
+		r.hardState.Term = snap.Term
+	}
+	r.raftLog.appliedIndex = max(snap.Index, r.raftLog.appliedIndex)
 }
 
 // matchCommitTerm 检查指定索引的日志条目的任期是否匹配
 func (l *RaftLog) matchCommitTerm(index uint64, term uint64) bool {
-	if index < uint64(len(l.entries)) && l.entries[index].Term == term {
-		return true
+	if index < l.offset || index > l.LastIndex() {
+		return false
 	}
-	return false
+	return l.Term(index) == term
 }

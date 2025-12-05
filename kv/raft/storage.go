@@ -23,6 +23,7 @@ type RaftStroage interface {
 	LoadSnapshot() (raftpb.Snapshot, error)
 
 	MakeSnapshotData() []byte
+	ApplySnapshotData(data []byte) error
 }
 
 const (
@@ -175,6 +176,41 @@ func (s *BadgerRaftStorage) MakeSnapshotData() []byte {
 	})
 	data, _ := proto.Marshal(sn)
 	return data
+}
+
+func (s *BadgerRaftStorage) ApplySnapshotData(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var sn raftpb.SnapshotData
+	if err := proto.Unmarshal(data, &sn); err != nil {
+		return err
+	}
+
+	return s.db.Update(func(txn *badger.Txn) error {
+		// wipe existing user data before applying snapshot content
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.KeyCopy(nil)
+			if bytes.HasPrefix(key, []byte(KeyRaft)) {
+				continue
+			}
+			if err := txn.Delete(key); err != nil {
+				return err
+			}
+		}
+
+		for _, kv := range sn.Kvs {
+			if err := txn.Set(kv.Key, kv.Value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func encodeHardState(st HardState) []byte {
