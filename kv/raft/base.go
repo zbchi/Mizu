@@ -97,6 +97,7 @@ func (p *ProgressTracker) Committed() uint64 {
 func (r *Raft) commitTo(to uint64) {
 	if to > r.hardState.CommitIndex {
 		r.hardState.CommitIndex = to
+		r.storage.SaveHardState(r.hardState)
 	}
 }
 

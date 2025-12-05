@@ -26,7 +26,7 @@ type Raft struct {
 
 	votes map[uint64]bool
 
-	//storage RaftStroage
+	storage RaftStroage
 }
 
 func (r *Raft) Tick() {
@@ -185,6 +185,7 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 
 		cut := reply.LogIndex - r.raftLog.offset
 		r.raftLog.entries = r.raftLog.entries[:cut]
+		r.storage.TruncateFrom(cut)
 		if r.hardState.CommitIndex > r.raftLog.LastIndex() {
 			r.commitTo(r.raftLog.LastIndex())
 		}
@@ -197,6 +198,7 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 		pos := m.LogIndex - r.raftLog.offset
 		newEntries := derefEntries(m.Entries)
 		r.raftLog.entries = append(r.raftLog.entries[:pos+1], newEntries...)
+		r.storage.SaveEntries(newEntries)
 	}
 	if m.Commit > r.hardState.CommitIndex {
 		r.commitTo(min(m.Commit, r.raftLog.LastIndex()))
@@ -256,6 +258,7 @@ func (r *Raft) grantVote(m raftpb.Message) bool {
 	}
 	r.electionElapsed = 0
 	r.hardState.Vote = m.From
+	r.storage.SaveHardState(r.hardState)
 	return true
 }
 
@@ -277,10 +280,14 @@ func (r *Raft) vote(m raftpb.Message) error {
 func (r *Raft) becomeFollower(term, lead uint64) {
 	r.state = StateFollower
 	r.lead = lead
-	if term > r.hardState.Term {
+	if term > r.hardState.Term && r.hardState.Vote != 0 {
 		r.hardState.Vote = 0 //leader任期大于自己才清空投票
+		r.storage.SaveHardState(r.hardState)
 	}
-	r.hardState.Term = term
+	if term > r.hardState.Term {
+		r.hardState.Term = term
+		r.storage.SaveHardState(r.hardState)
+	}
 	r.votes = map[uint64]bool{}
 	r.electionElapsed = 0
 }
@@ -290,6 +297,7 @@ func (r *Raft) becomeCandidate() {
 	r.lead = 0
 	r.hardState.Term++
 	r.hardState.Vote = r.id
+	r.storage.SaveHardState(r.hardState)
 	r.votes = map[uint64]bool{r.id: true}
 	r.electionElapsed = 0
 }
