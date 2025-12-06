@@ -27,6 +27,13 @@ type Raft struct {
 	votes map[uint64]bool
 
 	storage RaftStroage
+
+	// readyEntries holds uncommitted entries that need to be persisted
+	readyEntries []raftpb.Entry
+	// committedEntries holds committed entries ready to be applied
+	committedEntries []raftpb.Entry
+	// readySnapshot holds snapshot that needs to be persisted
+	readySnapshot *raftpb.Snapshot
 }
 
 func (r *Raft) Tick() {
@@ -69,6 +76,8 @@ func (r *Raft) stepFollower(m raftpb.Message) error {
 		return r.vote(m)
 	case raftpb.Type_MsgApp:
 		return r.handleAppend(m)
+	case raftpb.Type_MsgSnap:
+		return r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -83,6 +92,8 @@ func (r *Raft) stepCandidate(m raftpb.Message) error {
 		return r.vote(m)
 	case raftpb.Type_MsgApp:
 		return r.handleAppend(m)
+	case raftpb.Type_MsgSnap:
+		return r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -200,7 +211,8 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 		pos := m.LogIndex - r.raftLog.offset
 		newEntries := derefEntries(m.Entries)
 		r.raftLog.entries = append(r.raftLog.entries[:pos+1], newEntries...)
-		r.storage.SaveEntries(newEntries)
+		// Add new entries to readyEntries for persistence by upper layer
+		r.readyEntries = append(r.readyEntries, newEntries...)
 	}
 	if m.Commit > r.hardState.CommitIndex {
 		r.commitTo(min(m.Commit, r.raftLog.LastIndex()))
@@ -245,11 +257,9 @@ func (r *Raft) handleSnapshot(m raftpb.Message) error {
 
 	r.becomeFollower(m.Term, m.From)
 
-	if err := r.applySnapshot(*m.Snapshot); err != nil {
-		reply.Reject = true
-		r.send(reply)
-		return err
-	}
+	sn := *m.Snapshot
+	r.readySnapshot = &sn
+	r.restore(sn)
 
 	reply.Reject = false
 	r.send(reply)
@@ -479,35 +489,94 @@ func (r *Raft) Snapshot(index uint64) {
 }
 
 func (r *Raft) applyLog() {
-	/*for r.raftLog.appliedIndex < r.hardState.CommitIndex {
+	// Collect committed but not yet applied entries
+	for r.raftLog.appliedIndex < r.hardState.CommitIndex {
 		r.raftLog.appliedIndex++
 		idx := r.raftLog.appliedIndex
-		entry := r.raftLog.entries[idx]
-
-		msg := raftapi.ApplyMsg{
-			CommandValid: true,
-			Command:      entry.Data,
-			CommandIndex: int(entry.Index),
+		if idx < r.raftLog.FirstIndex() || idx > r.raftLog.LastIndex() {
+			continue
 		}
-		//slog.Info("apply", slog.Int("index", msg.CommandIndex), slog.Int("me", int(r.id)))
-		r.applyCh <- msg
-	}*/
+		entry := r.raftLog.Entry(idx)
+		r.committedEntries = append(r.committedEntries, entry)
+	}
 }
 
+// applySnapshot is called internally to apply a snapshot received from the leader.
+// The upper layer is responsible for persisting the snapshot via Ready.
 func (r *Raft) applySnapshot(sn raftpb.Snapshot) error {
 	if sn.Index == 0 {
 		return nil
 	}
-
-	// persist snapshot metadata and state machine data first
 	if err := r.storage.SaveSnapshot(sn); err != nil {
 		return err
 	}
 	if err := r.storage.ApplySnapshotData(sn.Data); err != nil {
 		return err
 	}
-
-	// restore in-memory raft state from snapshot
 	r.restore(sn)
 	return r.storage.SaveHardState(r.hardState)
+}
+
+// ApplySnapshot should be called by the application after it has persisted
+// and applied a snapshot received via Ready. This updates Raft's internal state.
+func (r *Raft) ApplySnapshot(sn raftpb.Snapshot) error {
+	if sn.Index == 0 {
+		return nil
+	}
+	// Just restore in-memory state
+	// The application has already persisted the snapshot
+	r.restore(sn)
+	return r.storage.SaveHardState(r.hardState)
+}
+
+// Ready returns the current state that is ready to be processed by the application.
+// The application must:
+// 1. Persist Entries to stable storage
+// 2. Apply CommittedEntries to the state machine
+// 3. Send Messages to other peers
+// 4. Call Advance() after processing
+func (r *Raft) Ready() Ready {
+	rd := Ready{
+		Entries:          r.readyEntries,
+		CommittedEntries: r.committedEntries,
+		Messages:         r.msgs,
+		Snapshot:         r.readySnapshot,
+	}
+	return rd
+}
+
+// Advance notifies the Raft that the application has processed and applied
+// the last Ready. It must be called after the application has processed
+// every Ready.
+func (r *Raft) Advance() {
+	// Clear processed data
+	r.readyEntries = nil
+	r.committedEntries = nil
+	r.msgs = nil
+	r.readySnapshot = nil
+}
+
+// Propose proposes data to be appended to the raft log.
+// This can only be called on the leader.
+func (r *Raft) Propose(data []byte) error {
+	if r.state != StateLeader {
+		return nil
+	}
+
+	index := r.raftLog.LastIndex() + 1
+	entry := raftpb.Entry{
+		Term:  r.hardState.Term,
+		Index: index,
+		Data:  data,
+	}
+
+	r.raftLog.entries = append(r.raftLog.entries, entry)
+	r.readyEntries = append(r.readyEntries, entry)
+
+	r.prs.prs[r.id].Match = index
+	r.prs.prs[r.id].Next = index + 1
+
+	r.bcastHeartBeat()
+
+	return nil
 }

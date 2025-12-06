@@ -35,6 +35,35 @@ type ProgressTracker struct {
 	prs map[uint64]*Progress
 }
 
+// Ready encapsulates the entries and messages that are ready to be saved,
+// committed, or sent to other peers.
+// This is the interface between the raft library and the application.
+type Ready struct {
+	// Entries specifies entries to be saved to stable storage BEFORE
+	// Messages are sent.
+	Entries []raftpb.Entry
+
+	// CommittedEntries specifies entries to be committed to a
+	// store/state-machine. These have previously been committed to stable
+	// store.
+	CommittedEntries []raftpb.Entry
+
+	// Messages specifies outbound messages to be sent AFTER Entries are
+	// committed to stable storage.
+	Messages []raftpb.Message
+
+	// Snapshot specifies the snapshot to be saved to stable storage.
+	Snapshot *raftpb.Snapshot
+}
+
+// IsEmpty returns true if this Ready is empty (has no updates).
+func (rd Ready) IsEmpty() bool {
+	return len(rd.Entries) == 0 &&
+		len(rd.CommittedEntries) == 0 &&
+		len(rd.Messages) == 0 &&
+		rd.Snapshot == nil
+}
+
 func (l *RaftLog) FirstIndex() uint64 {
 	return l.offset
 }
