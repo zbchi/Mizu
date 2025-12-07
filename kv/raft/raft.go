@@ -3,6 +3,7 @@ package raft
 import (
 	"log/slog"
 	"math/rand"
+	"sort"
 
 	"github.com/zbchi/linkv/proto/raftpb"
 )
@@ -10,30 +11,80 @@ import (
 type Raft struct {
 	id    uint64
 	state StateType
+	lead  uint64
 
 	hardState HardState
 	raftLog   *RaftLog
 
-	prs  *ProgressTracker
-	msgs []raftpb.Message
+	prs   map[uint64]*Progress
+	votes map[uint64]bool
 
-	lead uint64
+	msgs []raftpb.Message
 
 	electionElapsed  int
 	heartbeatElapsed int
 	electionTimeout  int
 	heartbeatTimeout int
 
-	votes map[uint64]bool
+	// 当前快照（用于发送给落后的 Follower）
+	currentSnapshot *raftpb.Snapshot
 
-	storage RaftStroage
-
-	// readyEntries holds uncommitted entries that need to be persisted
-	readyEntries []raftpb.Entry
-	// committedEntries holds committed entries ready to be applied
+	// Ready 相关
+	pendingHardState *HardState
+	pendingEntries   []raftpb.Entry
+	pendingSnapshot  *raftpb.Snapshot
 	committedEntries []raftpb.Entry
-	// readySnapshot holds snapshot that needs to be persisted
-	readySnapshot *raftpb.Snapshot
+}
+
+type Config struct {
+	ID               uint64
+	Peers            []uint64
+	ElectionTimeout  int
+	HeartbeatTimeout int
+}
+
+func NewRaft(cfg Config) *Raft {
+	if cfg.ElectionTimeout == 0 {
+		cfg.ElectionTimeout = 10
+	}
+	if cfg.HeartbeatTimeout == 0 {
+		cfg.HeartbeatTimeout = 3
+	}
+
+	prs := make(map[uint64]*Progress)
+	for _, peer := range cfg.Peers {
+		prs[peer] = &Progress{Match: 0, Next: 1}
+	}
+
+	return &Raft{
+		id:               cfg.ID,
+		state:            StateFollower,
+		prs:              prs,
+		votes:            make(map[uint64]bool),
+		raftLog:          NewRaftLog(),
+		electionTimeout:  cfg.ElectionTimeout,
+		heartbeatTimeout: cfg.HeartbeatTimeout,
+	}
+}
+
+func (r *Raft) RestoreState(hs HardState, entries []raftpb.Entry) {
+	r.hardState = hs
+	for _, e := range entries {
+		r.raftLog.Append(e)
+	}
+}
+
+func (r *Raft) RestoreSnapshot(snap raftpb.Snapshot) {
+	if snap.Index == 0 {
+		return
+	}
+	r.raftLog.Restore(snap.Index, snap.Term)
+	r.hardState.CommitIndex = max(snap.Index, r.hardState.CommitIndex)
+	if snap.Term > r.hardState.Term {
+		r.hardState.Term = snap.Term
+	}
+	// 保存快照供 sendSnapshot 使用
+	r.currentSnapshot = &snap
 }
 
 func (r *Raft) Tick() {
@@ -42,13 +93,13 @@ func (r *Raft) Tick() {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			r.bcastHeartBeat()
+			r.bcastAppend()
 		}
 	default:
 		r.electionElapsed++
 		if r.electionElapsed >= r.electionTimeout+rand.Intn(r.electionTimeout) {
 			r.electionElapsed = 0
-			r.Step(raftpb.Message{Type: raftpb.Type_MsgHup, From: r.id, To: r.id})
+			r.campaign()
 		}
 	}
 }
@@ -57,6 +108,7 @@ func (r *Raft) Step(m raftpb.Message) error {
 	if m.Term > r.hardState.Term {
 		r.becomeFollower(m.Term, 0)
 	}
+
 	switch r.state {
 	case StateFollower:
 		return r.stepFollower(m)
@@ -68,32 +120,151 @@ func (r *Raft) Step(m raftpb.Message) error {
 	return nil
 }
 
+func (r *Raft) Propose(data []byte) bool {
+	if r.state != StateLeader {
+		return false
+	}
+
+	index := r.raftLog.LastIndex() + 1
+	entry := raftpb.Entry{
+		Term:  r.hardState.Term,
+		Index: index,
+		Data:  data,
+	}
+
+	r.raftLog.Append(entry)
+	r.pendingEntries = append(r.pendingEntries, entry)
+
+	r.prs[r.id].Match = index
+	r.prs[r.id].Next = index + 1
+
+	r.bcastAppend()
+	return true
+}
+
+func (r *Raft) Ready() Ready {
+	rd := Ready{
+		HardState:        r.pendingHardState,
+		Entries:          r.pendingEntries,
+		Snapshot:         r.pendingSnapshot,
+		CommittedEntries: r.committedEntries,
+		Messages:         r.msgs,
+	}
+	return rd
+}
+
+func (r *Raft) Advance() {
+	r.pendingHardState = nil
+	r.pendingEntries = nil
+	r.pendingSnapshot = nil
+	r.committedEntries = nil
+	r.msgs = nil
+}
+
+func (r *Raft) Snapshot(index uint64, data []byte) *raftpb.Snapshot {
+	if index <= r.raftLog.FirstIndex() {
+		return nil
+	}
+
+	term := r.raftLog.Term(index)
+	r.raftLog.CompactTo(index, term)
+	r.hardState.CommitIndex = max(index, r.hardState.CommitIndex)
+	r.raftLog.SetAppliedIndex(max(index, r.raftLog.AppliedIndex()))
+	r.markHardStateChanged()
+
+	// 更新 Leader 的 progress
+	if r.state == StateLeader {
+		for _, pr := range r.prs {
+			if pr.Next <= r.raftLog.FirstIndex() {
+				pr.Next = r.raftLog.FirstIndex() + 1
+			}
+			if pr.Match < r.raftLog.FirstIndex() {
+				pr.Match = r.raftLog.FirstIndex()
+			}
+		}
+	}
+
+	sn := &raftpb.Snapshot{
+		Term:  term,
+		Index: index,
+		Data:  data,
+	}
+
+	//保存快照供 sendSnapshot 使用
+	r.currentSnapshot = sn
+	return sn
+}
+
+func (r *Raft) State() StateType    { return r.state }
+func (r *Raft) Term() uint64        { return r.hardState.Term }
+func (r *Raft) Lead() uint64        { return r.lead }
+func (r *Raft) ID() uint64          { return r.id }
+func (r *Raft) CommitIndex() uint64 { return r.hardState.CommitIndex }
+
+func (r *Raft) becomeFollower(term, lead uint64) {
+	r.state = StateFollower
+	r.lead = lead
+
+	if term > r.hardState.Term {
+		r.hardState.Term = term
+		r.hardState.Vote = 0
+		r.markHardStateChanged()
+	}
+
+	r.votes = make(map[uint64]bool)
+	r.electionElapsed = 0
+}
+
+func (r *Raft) becomeCandidate() {
+	r.state = StateCandidate
+	r.lead = 0
+	r.hardState.Term++
+	r.hardState.Vote = r.id
+	r.markHardStateChanged()
+	r.votes = map[uint64]bool{r.id: true}
+	r.electionElapsed = 0
+}
+
+func (r *Raft) becomeLeader() {
+	slog.Info("become leader",
+		"term", r.hardState.Term,
+		"commit", r.hardState.CommitIndex,
+		"id", r.id)
+
+	r.state = StateLeader
+	r.lead = r.id
+	r.heartbeatElapsed = 0
+
+	for _, pr := range r.prs {
+		pr.Match = 0
+		pr.Next = r.raftLog.LastIndex() + 1
+	}
+
+	r.bcastAppend()
+}
+
 func (r *Raft) stepFollower(m raftpb.Message) error {
 	switch m.Type {
-	case raftpb.Type_MsgHup:
-		return r.campaign()
 	case raftpb.Type_MsgVote:
-		return r.vote(m)
+		r.handleVote(m)
 	case raftpb.Type_MsgApp:
-		return r.handleAppend(m)
+		r.handleAppend(m)
 	case raftpb.Type_MsgSnap:
-		return r.handleSnapshot(m)
+		r.handleSnapshot(m)
 	}
 	return nil
 }
 
 func (r *Raft) stepCandidate(m raftpb.Message) error {
 	switch m.Type {
-	case raftpb.Type_MsgHup:
-		return r.campaign()
 	case raftpb.Type_MsgVoteResp:
-		return r.handleVoteResp(m)
+		r.handleVoteResp(m)
 	case raftpb.Type_MsgVote:
-		return r.vote(m)
+		r.handleVote(m)
 	case raftpb.Type_MsgApp:
-		return r.handleAppend(m)
+		r.handleAppend(m)
 	case raftpb.Type_MsgSnap:
-		return r.handleSnapshot(m)
+		r.handleSnapshot(m)
 	}
 	return nil
 }
@@ -101,64 +272,148 @@ func (r *Raft) stepCandidate(m raftpb.Message) error {
 func (r *Raft) stepLeader(m raftpb.Message) error {
 	switch m.Type {
 	case raftpb.Type_MsgAppResp:
-		return r.handleAppResp(m)
+		r.handleAppendResp(m)
 	case raftpb.Type_MsgSnapResp:
-		return r.handleSnapshotResp(m)
+		r.handleSnapshotResp(m)
 	}
 	return nil
 }
 
-func (r *Raft) handleVoteResp(m raftpb.Message) error {
-	r.votes[m.From] = !m.Reject
-	slog.Info("got vote", slog.Bool("isVote", !m.Reject),
-		slog.Int("from", int(m.From)),
-		slog.Int("fromTerm", int(m.Term)), slog.Int("id", int(r.id)))
-	won, lost := r.checkVotes()
-	if won {
+func (r *Raft) campaign() {
+	r.becomeCandidate()
+	slog.Info("start campaign", "term", r.hardState.Term, "id", r.id)
+
+	// 单节点直接成为 Leader
+	if len(r.prs) == 1 {
 		r.becomeLeader()
+		return
 	}
-	if lost {
+
+	for id := range r.prs {
+		if id == r.id {
+			continue
+		}
+		r.send(raftpb.Message{
+			Type:     raftpb.Type_MsgVote,
+			From:     r.id,
+			To:       id,
+			Term:     r.hardState.Term,
+			LogIndex: r.raftLog.LastIndex(),
+			LogTerm:  r.raftLog.LastTerm(),
+		})
+	}
+}
+
+func (r *Raft) handleVote(m raftpb.Message) {
+	granted := r.canVote(m)
+
+	if granted {
+		r.hardState.Vote = m.From
+		r.markHardStateChanged()
+		r.electionElapsed = 0
+	}
+
+	r.send(raftpb.Message{
+		Type:   raftpb.Type_MsgVoteResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		Reject: !granted,
+	})
+}
+
+func (r *Raft) canVote(m raftpb.Message) bool {
+	if r.hardState.Term > m.Term {
+		return false
+	}
+	if r.hardState.Vote != 0 && r.hardState.Vote != m.From {
+		return false
+	}
+
+	// 检查日志是否足够新
+	lastTerm := r.raftLog.LastTerm()
+	lastIndex := r.raftLog.LastIndex()
+	if lastTerm > m.LogTerm {
+		return false
+	}
+	if lastTerm == m.LogTerm && lastIndex > m.LogIndex {
+		return false
+	}
+
+	return true
+}
+
+func (r *Raft) handleVoteResp(m raftpb.Message) {
+	r.votes[m.From] = !m.Reject
+	slog.Info("got vote", "from", m.From, "granted", !m.Reject, "id", r.id)
+
+	granted, rejected := 0, 0
+	for _, v := range r.votes {
+		if v {
+			granted++
+		} else {
+			rejected++
+		}
+	}
+
+	quorum := len(r.prs)/2 + 1
+	if granted >= quorum {
+		r.becomeLeader()
+	} else if rejected >= quorum {
 		r.becomeFollower(r.hardState.Term, 0)
 	}
-	return nil
 }
 
-func (r *Raft) handleAppResp(m raftpb.Message) error {
-	if !m.Reject { //不冲突
-		r.prs.prs[m.From].Match = m.LogIndex
-		r.prs.prs[m.From].Next = min(m.LogIndex+1, r.raftLog.LastIndex()+1) //slog.Info("updateNext", "next", m.LogIndex+1, "sub", m.From)
-	} else { //冲突
-		if m.LogTerm == 0 { //无冲突任期
-			r.prs.prs[m.From].Next = max(m.LogIndex, 0)
-		} else { //有冲突任期
-			if found, ok := r.raftLog.findLastIndexOfTerm(m.LogTerm); ok {
-				r.prs.prs[m.From].Next = found + 1
-			} else {
-				r.prs.prs[m.From].Next = m.LogIndex
-			}
+func (r *Raft) bcastAppend() {
+	for id := range r.prs {
+		if id == r.id {
+			continue
 		}
+		r.sendAppend(id)
 	}
-	if r.prs.prs[m.From].Match >= r.prs.prs[m.From].Next {
-		r.prs.prs[m.From].Match = r.prs.prs[m.From].Next - 1
-	}
-	r.advanceCommitIndex()
-
-	return nil
 }
 
-func (l *RaftLog) findLastIndexOfTerm(term uint64) (uint64, bool) {
-	for i := l.LastIndex(); i >= l.FirstIndex(); i-- {
-		if l.Term(i) == term {
-			return i, true
-		}
-		if i == l.FirstIndex() {
-			break
-		}
+func (r *Raft) sendAppend(to uint64) {
+	pr := r.prs[to]
+
+	// 需要发送快照
+	if pr.Next <= r.raftLog.FirstIndex() {
+		r.sendSnapshot(to)
+		return
 	}
-	return 0, false
+
+	prevIndex := pr.Next - 1
+	prevTerm := r.raftLog.Term(prevIndex)
+	entries := r.raftLog.Slice(pr.Next, r.raftLog.LastIndex()+1)
+
+	r.send(raftpb.Message{
+		Type:     raftpb.Type_MsgApp,
+		From:     r.id,
+		To:       to,
+		Term:     r.hardState.Term,
+		LogIndex: prevIndex,
+		LogTerm:  prevTerm,
+		Entries:  refEntries(entries),
+		Commit:   r.hardState.CommitIndex,
+	})
 }
 
-func (r *Raft) handleAppend(m raftpb.Message) error {
+func (r *Raft) sendSnapshot(to uint64) {
+	if r.currentSnapshot == nil || r.currentSnapshot.Index == 0 {
+		slog.Warn("no snapshot available to send", "to", to, "id", r.id)
+		return
+	}
+
+	r.send(raftpb.Message{
+		Type:     raftpb.Type_MsgSnap,
+		From:     r.id,
+		To:       to,
+		Term:     r.hardState.Term,
+		Snapshot: r.currentSnapshot,
+	})
+}
+
+func (r *Raft) handleAppend(m raftpb.Message) {
 	reply := raftpb.Message{
 		Type: raftpb.Type_MsgAppResp,
 		From: r.id,
@@ -169,67 +424,84 @@ func (r *Raft) handleAppend(m raftpb.Message) error {
 	if r.hardState.Term > m.Term {
 		reply.Reject = true
 		r.send(reply)
-		return nil
-	}
-
-	reply.LogTerm = 0 //default 0
-	lastIndex := r.raftLog.LastIndex()
-
-	//preLogIndex > len entries
-	if m.LogIndex > lastIndex {
-		reply.Reject = true
-		reply.LogIndex = lastIndex + 1
-		r.send(reply)
-		return nil
+		return
 	}
 
 	r.becomeFollower(m.Term, m.From)
 
-	//not match preLogTerm
+	// prevIndex 超出日志范围
+	if m.LogIndex > r.raftLog.LastIndex() {
+		reply.Reject = true
+		reply.LogIndex = r.raftLog.LastIndex() + 1
+		r.send(reply)
+		return
+	}
+
+	// prevTerm 不匹配
 	if m.LogTerm != r.raftLog.Term(m.LogIndex) {
 		reply.Reject = true
-		reply.LogTerm = r.raftLog.Term(m.LogIndex) //conflictTerm
+		reply.LogTerm = r.raftLog.Term(m.LogIndex)
 
+		// 找到冲突任期的第一个索引
 		first := m.LogIndex
 		for first > r.raftLog.FirstIndex() && r.raftLog.Term(first-1) == reply.LogTerm {
 			first--
 		}
-		reply.LogIndex = first //conflictIndex
+		reply.LogIndex = first
 
-		cut := reply.LogIndex - r.raftLog.offset
-		r.raftLog.entries = r.raftLog.entries[:cut]
-		r.storage.TruncateFrom(reply.LogIndex)
-		if r.hardState.CommitIndex > r.raftLog.LastIndex() {
-			r.commitTo(r.raftLog.LastIndex())
-		}
+		// 截断冲突日志
+		r.raftLog.Truncate(first)
 
 		r.send(reply)
-		return nil
+		return
 	}
 
+	// 追加日志
 	if len(m.Entries) > 0 {
-		pos := m.LogIndex - r.raftLog.offset
 		newEntries := derefEntries(m.Entries)
-		r.raftLog.entries = append(r.raftLog.entries[:pos+1], newEntries...)
-		// Add new entries to readyEntries for persistence by upper layer
-		r.readyEntries = append(r.readyEntries, newEntries...)
+		r.raftLog.TruncateAndAppend(m.LogIndex, newEntries)
+		r.pendingEntries = append(r.pendingEntries, newEntries...)
 	}
+
+	// 更新 commit
 	if m.Commit > r.hardState.CommitIndex {
 		r.commitTo(min(m.Commit, r.raftLog.LastIndex()))
-		r.applyLog()
-	}
-
-	if len(m.Entries) > 0 {
-		slog.Info("recieve", "commitIndex", r.hardState.CommitIndex, "me", int(r.id))
 	}
 
 	reply.Reject = false
-	reply.LogIndex = r.raftLog.LastIndex() //matchIndex
+	reply.LogIndex = r.raftLog.LastIndex()
 	r.send(reply)
-	return nil
 }
 
-func (r *Raft) handleSnapshot(m raftpb.Message) error {
+func (r *Raft) handleAppendResp(m raftpb.Message) {
+	pr := r.prs[m.From]
+	if pr == nil {
+		return
+	}
+
+	if !m.Reject {
+		pr.Match = m.LogIndex
+		pr.Next = min(m.LogIndex+1, r.raftLog.LastIndex()+1)
+	} else {
+		if m.LogTerm == 0 {
+			pr.Next = max(m.LogIndex, 1)
+		} else {
+			if found, ok := r.raftLog.FindLastIndexOfTerm(m.LogTerm); ok {
+				pr.Next = found + 1
+			} else {
+				pr.Next = m.LogIndex
+			}
+		}
+	}
+
+	if pr.Match >= pr.Next {
+		pr.Match = pr.Next - 1
+	}
+
+	r.maybeCommit()
+}
+
+func (r *Raft) handleSnapshot(m raftpb.Message) {
 	reply := raftpb.Message{
 		Type: raftpb.Type_MsgSnapResp,
 		From: r.id,
@@ -237,262 +509,62 @@ func (r *Raft) handleSnapshot(m raftpb.Message) error {
 		Term: r.hardState.Term,
 	}
 
-	if r.hardState.Term > m.Term {
+	if r.hardState.Term > m.Term || m.Snapshot == nil {
 		reply.Reject = true
 		r.send(reply)
-		return nil
+		return
 	}
 
-	if m.Snapshot == nil {
+	if r.raftLog.FirstIndex() >= m.Snapshot.Index {
 		reply.Reject = true
 		r.send(reply)
-		return nil
-	}
-
-	if r.raftLog.offset >= m.Snapshot.Index {
-		reply.Reject = true
-		r.send(reply)
-		return nil
+		return
 	}
 
 	r.becomeFollower(m.Term, m.From)
 
+	// 设置待处理的快照
 	sn := *m.Snapshot
-	r.readySnapshot = &sn
-	r.restore(sn)
+	r.pendingSnapshot = &sn
+	r.RestoreSnapshot(sn)
 
 	reply.Reject = false
 	r.send(reply)
-	return nil
 }
 
-func (r *Raft) handleSnapshotResp(m raftpb.Message) error {
-	if m.Reject == true {
-		return nil
+func (r *Raft) handleSnapshotResp(m raftpb.Message) {
+	if m.Reject {
+		return
 	}
-
-	r.prs.prs[m.From].Next = r.raftLog.offset + 1
-	r.prs.prs[m.From].Match = r.raftLog.offset
-	return nil
+	pr := r.prs[m.From]
+	if pr != nil {
+		pr.Next = r.raftLog.FirstIndex() + 1
+		pr.Match = r.raftLog.FirstIndex()
+	}
 }
 
 func (r *Raft) send(m raftpb.Message) {
-	if m.Type == raftpb.Type_MsgAppResp && m.Reject == true {
-		slog.Info("rejectAppend", "conflictIndex", m.LogIndex, "me", r.id)
-	}
 	r.msgs = append(r.msgs, m)
 }
 
-func (r *Raft) campaign() error {
-	r.becomeCandidate()
-	slog.Info("start campaign", slog.Int("msgsize", len(r.msgs)), slog.Int("term", int(r.hardState.Term)), slog.Int("me", int(r.id)))
-	for id := range r.prs.prs {
-		if id == r.id {
-			continue
-		}
-		r.msgs = append(r.msgs, raftpb.Message{
-			Type:     raftpb.Type_MsgVote,
-			From:     r.id,
-			To:       id,
-			Term:     r.hardState.Term,
-			LogIndex: r.raftLog.LastIndex(),
-			LogTerm:  r.raftLog.LastTerm(),
-		})
-	}
-	return nil
+func (r *Raft) markHardStateChanged() {
+	hs := r.hardState
+	r.pendingHardState = &hs
 }
 
-func (r *Raft) grantVote(m raftpb.Message) bool {
-	if r.hardState.Term > m.Term {
-		return false
-	}
-	if r.hardState.Vote != 0 && r.hardState.Vote != m.From {
-		return false
-	}
-	lastTerm := r.raftLog.LastTerm()
-	lastIndex := r.raftLog.LastIndex()
-	if lastTerm > m.LogTerm {
-		return false
-	}
-	if lastTerm == m.LogTerm && lastIndex > m.LogIndex {
-		return false
-	}
-	r.electionElapsed = 0
-	r.hardState.Vote = m.From
-	r.storage.SaveHardState(r.hardState)
-	return true
-}
-
-func (r *Raft) vote(m raftpb.Message) error {
-	granted := r.grantVote(m)
-	r.msgs = append(r.msgs, raftpb.Message{
-		Type:   raftpb.Type_MsgVoteResp,
-		From:   r.id,
-		To:     m.From,
-		Term:   r.hardState.Term,
-		Reject: !granted,
-	})
-	if granted {
-		r.becomeFollower(m.Term, 0)
-	}
-	return nil
-}
-
-func (r *Raft) becomeFollower(term, lead uint64) {
-	r.state = StateFollower
-	r.lead = lead
-	if term > r.hardState.Term && r.hardState.Vote != 0 {
-		r.hardState.Vote = 0 //leader任期大于自己才清空投票
-		r.storage.SaveHardState(r.hardState)
-	}
-	if term > r.hardState.Term {
-		r.hardState.Term = term
-		r.storage.SaveHardState(r.hardState)
-	}
-	r.votes = map[uint64]bool{}
-	r.electionElapsed = 0
-}
-
-func (r *Raft) becomeCandidate() {
-	r.state = StateCandidate
-	r.lead = 0
-	r.hardState.Term++
-	r.hardState.Vote = r.id
-	r.storage.SaveHardState(r.hardState)
-	r.votes = map[uint64]bool{r.id: true}
-	r.electionElapsed = 0
-}
-
-func (r *Raft) becomeLeader() {
-	slog.Info("become leader", "commitIndex", r.hardState.CommitIndex,
-		"logsize", len(r.raftLog.entries), "term", r.hardState.Term,
-		"me", int(r.id))
-	r.state = StateLeader
-	r.lead = r.id
-	r.heartbeatElapsed = 0
-	slog.Info("init next", "value", r.raftLog.LastIndex()+1)
-	for _, prs := range r.prs.prs {
-		prs.Match = 0
-		prs.Next = r.raftLog.LastIndex() + 1
-	}
-	r.bcastHeartBeat()
-}
-
-func (r *Raft) bcastHeartBeat() {
-	for id := range r.prs.prs {
-		if r.state != StateLeader {
-			return
-		}
-		if id == r.id {
-			continue
-		}
-
-		if r.prs.prs[id].Next <= r.raftLog.offset {
-			r.sendSnapshot(id)
-			continue
-		}
-
-		//slog.Info("send", "next", r.prs.prs[id].Next, "to", id, "me", r.id)
-		m := raftpb.Message{
-			Type: raftpb.Type_MsgApp,
-			From: r.id,
-			To:   id,
-			Term: r.hardState.Term,
-
-			Entries:  refEntries(r.raftLog.Slice(r.prs.prs[id].Next, r.raftLog.LastIndex()+1)),
-			Commit:   r.hardState.CommitIndex,
-			LogIndex: r.preLogIndex(id),
-			LogTerm:  r.preLogTerm(id),
-		}
-
-		if len(m.Entries) > 0 {
-			//slog.Info("send", slog.Int("next", int(r.prs.prs[id].Next)))
-		}
-		r.send(m)
+func (r *Raft) commitTo(index uint64) {
+	if index > r.hardState.CommitIndex {
+		r.hardState.CommitIndex = index
+		r.markHardStateChanged()
+		r.applyCommitted()
 	}
 }
 
-func (r *Raft) sendSnapshot(id uint64) {
-	if r.state != StateLeader {
-		return
-	}
+func (r *Raft) applyCommitted() {
+	for r.raftLog.AppliedIndex() < r.hardState.CommitIndex {
+		idx := r.raftLog.AppliedIndex() + 1
+		r.raftLog.SetAppliedIndex(idx)
 
-	snapshot, _ := r.storage.LoadSnapshot()
-	if snapshot.Index == 0 {
-		return
-	}
-	m := raftpb.Message{
-		Type: raftpb.Type_MsgSnap,
-		From: r.id,
-		To:   id,
-		Term: r.hardState.Term,
-
-		Snapshot: &snapshot,
-	}
-	r.send(m)
-}
-
-func (r *Raft) checkVotes() (won, lost bool) {
-	ag, rj := 0, 0
-	for _, v := range r.votes {
-		if v {
-			ag++
-		} else {
-			rj++
-		}
-	}
-	quorum := len(r.prs.prs)/2 + 1
-	if ag >= quorum {
-		return true, false
-	}
-	if rj >= quorum {
-		return false, true
-	}
-	return false, false
-}
-
-func (r *Raft) advanceCommitIndex() {
-	mci := r.prs.Committed()
-	if r.raftLog.matchCommitTerm(mci, r.hardState.Term) {
-		r.commitTo(mci)
-		r.applyLog()
-	}
-}
-
-// Snapshot creates a snapshot at the given index and compacts the log.
-// This should be called by the application layer after applying entries.
-func (r *Raft) Snapshot(index uint64) {
-	if index <= r.raftLog.offset {
-		return
-	}
-	r.compactTo(index, r.raftLog.Term(index))
-	r.hardState.CommitIndex = max(index, r.hardState.CommitIndex)
-	r.raftLog.appliedIndex = max(index, r.raftLog.appliedIndex)
-	r.storage.SaveHardState(r.hardState)
-
-	if r.state == StateLeader {
-		for _, prs := range r.prs.prs {
-			if prs.Next <= r.raftLog.offset {
-				prs.Next = r.raftLog.offset + 1
-			}
-			if prs.Match < r.raftLog.offset {
-				prs.Match = r.raftLog.offset
-			}
-		}
-	}
-	sn := raftpb.Snapshot{
-		Term:  r.raftLog.Term(index),
-		Index: index,
-		Data:  r.storage.MakeSnapshotData(),
-	}
-	r.storage.SaveSnapshot(sn)
-}
-
-func (r *Raft) applyLog() {
-	// Collect committed but not yet applied entries
-	for r.raftLog.appliedIndex < r.hardState.CommitIndex {
-		r.raftLog.appliedIndex++
-		idx := r.raftLog.appliedIndex
 		if idx < r.raftLog.FirstIndex() || idx > r.raftLog.LastIndex() {
 			continue
 		}
@@ -501,82 +573,40 @@ func (r *Raft) applyLog() {
 	}
 }
 
-// applySnapshot is called internally to apply a snapshot received from the leader.
-// The upper layer is responsible for persisting the snapshot via Ready.
-func (r *Raft) applySnapshot(sn raftpb.Snapshot) error {
-	if sn.Index == 0 {
-		return nil
+func (r *Raft) maybeCommit() {
+	matches := make([]uint64, 0, len(r.prs))
+	for _, pr := range r.prs {
+		matches = append(matches, pr.Match)
 	}
-	if err := r.storage.SaveSnapshot(sn); err != nil {
-		return err
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i] > matches[j]
+	})
+
+	quorum := len(r.prs)/2 + 1
+	mci := matches[quorum-1]
+
+	// 只提交当前任期的日志
+	if r.raftLog.MatchTerm(mci, r.hardState.Term) {
+		r.commitTo(mci)
 	}
-	if err := r.storage.ApplySnapshotData(sn.Data); err != nil {
-		return err
-	}
-	r.restore(sn)
-	return r.storage.SaveHardState(r.hardState)
 }
 
-// ApplySnapshot should be called by the application after it has persisted
-// and applied a snapshot received via Ready. This updates Raft's internal state.
-func (r *Raft) ApplySnapshot(sn raftpb.Snapshot) error {
-	if sn.Index == 0 {
-		return nil
+// ========================
+// 工具函数
+// ========================
+
+func refEntries(entries []raftpb.Entry) []*raftpb.Entry {
+	refs := make([]*raftpb.Entry, len(entries))
+	for i := range entries {
+		refs[i] = &entries[i]
 	}
-	// Just restore in-memory state
-	// The application has already persisted the snapshot
-	r.restore(sn)
-	return r.storage.SaveHardState(r.hardState)
+	return refs
 }
 
-// Ready returns the current state that is ready to be processed by the application.
-// The application must:
-// 1. Persist Entries to stable storage
-// 2. Apply CommittedEntries to the state machine
-// 3. Send Messages to other peers
-// 4. Call Advance() after processing
-func (r *Raft) Ready() Ready {
-	rd := Ready{
-		Entries:          r.readyEntries,
-		CommittedEntries: r.committedEntries,
-		Messages:         r.msgs,
-		Snapshot:         r.readySnapshot,
+func derefEntries(entries []*raftpb.Entry) []raftpb.Entry {
+	vals := make([]raftpb.Entry, len(entries))
+	for i, e := range entries {
+		vals[i] = *e
 	}
-	return rd
-}
-
-// Advance notifies the Raft that the application has processed and applied
-// the last Ready. It must be called after the application has processed
-// every Ready.
-func (r *Raft) Advance() {
-	// Clear processed data
-	r.readyEntries = nil
-	r.committedEntries = nil
-	r.msgs = nil
-	r.readySnapshot = nil
-}
-
-// Propose proposes data to be appended to the raft log.
-// This can only be called on the leader.
-func (r *Raft) Propose(data []byte) error {
-	if r.state != StateLeader {
-		return nil
-	}
-
-	index := r.raftLog.LastIndex() + 1
-	entry := raftpb.Entry{
-		Term:  r.hardState.Term,
-		Index: index,
-		Data:  data,
-	}
-
-	r.raftLog.entries = append(r.raftLog.entries, entry)
-	r.readyEntries = append(r.readyEntries, entry)
-
-	r.prs.prs[r.id].Match = index
-	r.prs.prs[r.id].Next = index + 1
-
-	r.bcastHeartBeat()
-
-	return nil
+	return vals
 }

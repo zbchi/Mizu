@@ -5,40 +5,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/linkv/proto/raftpb"
 )
 
+// 创建测试用的 Raft 实例
+func newTestRaft(id uint64, peers []uint64, state StateType) *Raft {
+	r := NewRaft(Config{
+		ID:               id,
+		Peers:            peers,
+		ElectionTimeout:  10,
+		HeartbeatTimeout: 1,
+	})
+	r.state = state
+	if state == StateLeader {
+		r.lead = id
+		r.hardState.Term = 1
+	}
+	return r
+}
+
 // TestNodeBasicLifecycle tests basic node start and stop
 func TestNodeBasicLifecycle(t *testing.T) {
-	// Create a simple Raft instance for testing
-	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	storage := &BadgerRaftStorage{db: db}
-
-	r := &Raft{
-		id:               1,
-		state:            StateFollower,
-		hardState:        HardState{Term: 0, Vote: 0, CommitIndex: 0},
-		raftLog:          &RaftLog{entries: []raftpb.Entry{{Term: 0, Index: 0}}, offset: 0, appliedIndex: 0},
-		prs:              &ProgressTracker{prs: map[uint64]*Progress{1: {Match: 0, Next: 1}}},
-		msgs:             []raftpb.Message{},
-		lead:             0,
-		electionTimeout:  10,
-		heartbeatTimeout: 1,
-		votes:            map[uint64]bool{},
-		storage:          storage,
-		readyEntries:     nil,
-		committedEntries: nil,
-		readySnapshot:    nil,
-	}
-
-	// Start node
-	node := StartNode(r)
+	r := newTestRaft(1, []uint64{1}, StateFollower)
+	node := StartNodeWithRaft(r)
 
 	// Give it a moment to start
 	time.Sleep(10 * time.Millisecond)
@@ -49,39 +38,15 @@ func TestNodeBasicLifecycle(t *testing.T) {
 
 // TestNodePropose tests that Propose works
 func TestNodePropose(t *testing.T) {
-	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	storage := &BadgerRaftStorage{db: db}
-
-	r := &Raft{
-		id:               1,
-		state:            StateLeader, // Start as leader to accept proposals
-		hardState:        HardState{Term: 1, Vote: 0, CommitIndex: 0},
-		raftLog:          &RaftLog{entries: []raftpb.Entry{{Term: 0, Index: 0}}, offset: 0, appliedIndex: 0},
-		prs:              &ProgressTracker{prs: map[uint64]*Progress{1: {Match: 0, Next: 1}}},
-		msgs:             []raftpb.Message{},
-		lead:             1,
-		electionTimeout:  10,
-		heartbeatTimeout: 1,
-		votes:            map[uint64]bool{},
-		storage:          storage,
-		readyEntries:     nil,
-		committedEntries: nil,
-		readySnapshot:    nil,
-	}
-
-	node := StartNode(r)
+	r := newTestRaft(1, []uint64{1}, StateLeader)
+	node := StartNodeWithRaft(r)
 	defer node.Stop()
 
 	// Propose some data
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	err = node.Propose(ctx, []byte("test data"))
+	err := node.Propose(ctx, []byte("test data"))
 	if err != nil {
 		t.Fatalf("Propose failed: %v", err)
 	}
@@ -92,39 +57,15 @@ func TestNodePropose(t *testing.T) {
 
 // TestNodeReadyChannel tests that Ready channel works
 func TestNodeReadyChannel(t *testing.T) {
-	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	storage := &BadgerRaftStorage{db: db}
-
-	r := &Raft{
-		id:               1,
-		state:            StateLeader,
-		hardState:        HardState{Term: 1, Vote: 0, CommitIndex: 0},
-		raftLog:          &RaftLog{entries: []raftpb.Entry{{Term: 0, Index: 0}}, offset: 0, appliedIndex: 0},
-		prs:              &ProgressTracker{prs: map[uint64]*Progress{1: {Match: 0, Next: 1}}},
-		msgs:             []raftpb.Message{},
-		lead:             1,
-		electionTimeout:  10,
-		heartbeatTimeout: 1,
-		votes:            map[uint64]bool{},
-		storage:          storage,
-		readyEntries:     nil,
-		committedEntries: nil,
-		readySnapshot:    nil,
-	}
-
-	node := StartNode(r)
+	r := newTestRaft(1, []uint64{1}, StateLeader)
+	node := StartNodeWithRaft(r)
 	defer node.Stop()
 
 	// Propose to generate a Ready
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	err = node.Propose(ctx, []byte("test data"))
+	err := node.Propose(ctx, []byte("test data"))
 	if err != nil {
 		t.Fatalf("Propose failed: %v", err)
 	}
@@ -133,7 +74,7 @@ func TestNodeReadyChannel(t *testing.T) {
 	select {
 	case rd := <-node.Ready():
 		// Should receive a Ready with entries
-		if len(rd.Entries) == 0 && len(rd.Messages) == 0 {
+		if len(rd.Entries) == 0 && len(rd.Messages) == 0 && rd.HardState == nil {
 			t.Log("Received empty Ready, this is OK for initial state")
 		}
 		// Advance to acknowledge
@@ -146,32 +87,8 @@ func TestNodeReadyChannel(t *testing.T) {
 
 // TestNodeTick tests that Tick works
 func TestNodeTick(t *testing.T) {
-	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	storage := &BadgerRaftStorage{db: db}
-
-	r := &Raft{
-		id:               1,
-		state:            StateFollower,
-		hardState:        HardState{Term: 0, Vote: 0, CommitIndex: 0},
-		raftLog:          &RaftLog{entries: []raftpb.Entry{{Term: 0, Index: 0}}, offset: 0, appliedIndex: 0},
-		prs:              &ProgressTracker{prs: map[uint64]*Progress{1: {Match: 0, Next: 1}}},
-		msgs:             []raftpb.Message{},
-		lead:             0,
-		electionTimeout:  10,
-		heartbeatTimeout: 1,
-		votes:            map[uint64]bool{},
-		storage:          storage,
-		readyEntries:     nil,
-		committedEntries: nil,
-		readySnapshot:    nil,
-	}
-
-	node := StartNode(r)
+	r := newTestRaft(1, []uint64{1}, StateFollower)
+	node := StartNodeWithRaft(r)
 	defer node.Stop()
 
 	// Call Tick a few times
@@ -185,32 +102,8 @@ func TestNodeTick(t *testing.T) {
 
 // TestNodeStop tests graceful shutdown
 func TestNodeStop(t *testing.T) {
-	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	storage := &BadgerRaftStorage{db: db}
-
-	r := &Raft{
-		id:               1,
-		state:            StateFollower,
-		hardState:        HardState{Term: 0, Vote: 0, CommitIndex: 0},
-		raftLog:          &RaftLog{entries: []raftpb.Entry{{Term: 0, Index: 0}}, offset: 0, appliedIndex: 0},
-		prs:              &ProgressTracker{prs: map[uint64]*Progress{1: {Match: 0, Next: 1}}},
-		msgs:             []raftpb.Message{},
-		lead:             0,
-		electionTimeout:  10,
-		heartbeatTimeout: 1,
-		votes:            map[uint64]bool{},
-		storage:          storage,
-		readyEntries:     nil,
-		committedEntries: nil,
-		readySnapshot:    nil,
-	}
-
-	node := StartNode(r)
+	r := newTestRaft(1, []uint64{1}, StateFollower)
+	node := StartNodeWithRaft(r)
 
 	// Stop should complete within reasonable time
 	done := make(chan struct{})
@@ -224,5 +117,60 @@ func TestNodeStop(t *testing.T) {
 		// Success
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stop took too long")
+	}
+}
+
+// TestNodeStep tests that Step works
+func TestNodeStep(t *testing.T) {
+	r := newTestRaft(1, []uint64{1, 2}, StateFollower)
+	node := StartNodeWithRaft(r)
+	defer node.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Send a vote request message
+	msg := raftpb.Message{
+		Type: raftpb.Type_MsgVote,
+		From: 2,
+		To:   1,
+		Term: 2,
+	}
+
+	err := node.Step(ctx, msg)
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	// Give it time to process
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestNodeSnapshot tests that Snapshot works
+func TestNodeSnapshot(t *testing.T) {
+	r := newTestRaft(1, []uint64{1}, StateLeader)
+	// 添加一些日志
+	r.raftLog.Append(raftpb.Entry{Term: 1, Index: 1, Data: []byte("data1")})
+	r.raftLog.Append(raftpb.Entry{Term: 1, Index: 2, Data: []byte("data2")})
+	r.hardState.CommitIndex = 2
+	r.raftLog.SetAppliedIndex(2)
+
+	node := StartNodeWithRaft(r)
+	defer node.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	sn, err := node.Snapshot(ctx, 2, []byte("snapshot data"))
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+
+	if sn == nil {
+		t.Fatal("Expected snapshot, got nil")
+	}
+
+	if sn.Index != 2 {
+		t.Fatalf("Expected snapshot index 2, got %d", sn.Index)
 	}
 }

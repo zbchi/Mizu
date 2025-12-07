@@ -3,7 +3,6 @@ package raft
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/zbchi/linkv/proto/raftpb"
 )
@@ -12,72 +11,71 @@ var (
 	ErrStopped = errors.New("raft: stopped")
 )
 
-// Node represents a node in a raft cluster.
-// It encapsulates the raft state machine and provides a thread-safe
-// asynchronous interface for interacting with raft.
+// Node是Raft的线程安全接口
+// 它封装了Raft状态机，通过channel提供异步交互
 type Node interface {
-	// Tick increments the internal logical clock by a single tick.
-	// Election timeouts and heartbeat timeouts are in units of ticks.
+	// Tick 推进逻辑时钟
 	Tick()
 
-	// Propose proposes data to be appended to the raft log.
+	//Propose 提议新数据
 	Propose(ctx context.Context, data []byte) error
 
-	// Step advances the state machine using the given message.
+	//Step 处理收到的消息
 	Step(ctx context.Context, m raftpb.Message) error
 
-	// Ready returns a channel that yields a Ready struct when there is
-	// state ready to be processed by the application.
+	//Ready 返回待处理状态的 channel
 	Ready() <-chan Ready
 
-	// Advance notifies the Node that the application has saved progress
-	// up to the last Ready. It prepares the node to return the next
-	// available Ready.
+	//Advance 确认已处理完 Ready
 	Advance()
 
-	// Stop performs any necessary cleanup and stops the node.
+	//Snapshot 创建快照
+	Snapshot(ctx context.Context, index uint64, data []byte) (*raftpb.Snapshot, error)
+
+	//Stop停止节点
 	Stop()
 }
 
-// node implements the Node interface.
 type node struct {
-	// Input channels
-	propc chan []byte         // for Propose
-	recvc chan raftpb.Message // for Step
-	tickc chan struct{}       // for Tick
+	propc    chan []byte
+	recvc    chan raftpb.Message
+	tickc    chan struct{}
+	snapc    chan SnapshotRequest
+	readyc   chan Ready
+	advancec chan struct{}
+	stopc    chan struct{}
+	done     chan struct{}
 
-	// Output channel
-	readyc chan Ready // for Ready
-
-	// Control channels
-	advancec chan struct{} // for Advance
-	stopc    chan struct{} // for Stop
-	done     chan struct{} // signals run() has exited
-
-	// The raft state machine
-	rn *Raft
+	raft *Raft
 }
 
-// StartNode creates and starts a new Node with the given configuration.
-// The Node will run in a background goroutine.
-func StartNode(r *Raft) Node {
+func StartNode(cfg Config) Node {
+	r := NewRaft(cfg)
+	return startNode(r)
+}
+
+func StartNodeWithRaft(r *Raft) Node {
+	return startNode(r)
+}
+
+func startNode(r *Raft) Node {
 	n := &node{
 		propc:    make(chan []byte),
 		recvc:    make(chan raftpb.Message),
-		tickc:    make(chan struct{}),
+		tickc:    make(chan struct{}, 1),
+		snapc:    make(chan SnapshotRequest),
 		readyc:   make(chan Ready),
 		advancec: make(chan struct{}),
 		stopc:    make(chan struct{}),
 		done:     make(chan struct{}),
-		rn:       r,
+		raft:     r,
 	}
 
 	go n.run()
 	return n
 }
 
-// run is the main loop that runs in a background goroutine.
-// It processes all inputs and generates Ready outputs.
+// 主循环
 func (n *node) run() {
 	defer close(n.done)
 
@@ -85,7 +83,10 @@ func (n *node) run() {
 	var rd Ready
 
 	for {
-		// Only enable readyc if we have a non-empty Ready to send
+		if rd.IsEmpty() {
+			rd = n.raft.Ready()
+		}
+
 		if rd.IsEmpty() {
 			readyc = nil
 		} else {
@@ -94,32 +95,25 @@ func (n *node) run() {
 
 		select {
 		case <-n.tickc:
-			n.rn.Tick()
+			n.raft.Tick()
 
 		case m := <-n.recvc:
-			n.rn.Step(m)
+			n.raft.Step(m)
 
 		case data := <-n.propc:
-			n.rn.Propose(data)
+			n.raft.Propose(data)
+
+		case req := <-n.snapc:
+			sn := n.raft.Snapshot(req.Index, req.Data)
+			req.ResultC <- sn
 
 		case readyc <- rd:
 			<-n.advancec
-			n.rn.Advance()
-			rd = Ready{} // clear
+			n.raft.Advance()
+			rd = Ready{}
 
 		case <-n.stopc:
 			return
-
-		default:
-			// Check if there's a new Ready
-			if rd.IsEmpty() {
-				rd = n.rn.Ready()
-			}
-
-			// Small sleep to avoid busy loop when nothing is ready
-			if rd.IsEmpty() {
-				time.Sleep(time.Millisecond)
-			}
 		}
 	}
 }
@@ -127,7 +121,7 @@ func (n *node) run() {
 func (n *node) Tick() {
 	select {
 	case n.tickc <- struct{}{}:
-	case <-n.stopc:
+	default:
 	}
 }
 
@@ -143,10 +137,6 @@ func (n *node) Propose(ctx context.Context, data []byte) error {
 }
 
 func (n *node) Step(ctx context.Context, m raftpb.Message) error {
-	if m.Type == raftpb.Type_MsgHup {
-		return nil
-	}
-
 	select {
 	case n.recvc <- m:
 		return nil
@@ -165,6 +155,30 @@ func (n *node) Advance() {
 	select {
 	case n.advancec <- struct{}{}:
 	case <-n.stopc:
+	}
+}
+
+func (n *node) Snapshot(ctx context.Context, index uint64, data []byte) (*raftpb.Snapshot, error) {
+	req := SnapshotRequest{
+		Index:   index,
+		Data:    data,
+		ResultC: make(chan *raftpb.Snapshot, 1),
+	}
+
+	select {
+	case n.snapc <- req:
+		select {
+		case sn := <-req.ResultC:
+			return sn, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-n.stopc:
+			return nil, ErrStopped
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-n.stopc:
+		return nil, ErrStopped
 	}
 }
 

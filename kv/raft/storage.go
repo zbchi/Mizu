@@ -11,7 +11,7 @@ import (
 
 const MaxLogsCount = 2000
 
-type RaftStroage interface {
+type RaftStorage interface {
 	SaveHardState(st HardState) error
 	LoadHardState() (HardState, error)
 
@@ -35,6 +35,10 @@ const (
 
 type BadgerRaftStorage struct {
 	db *badger.DB
+}
+
+func NewBadgerRaftStorage(db *badger.DB) RaftStorage {
+	return &BadgerRaftStorage{db: db}
 }
 
 func entryKey(index uint64) []byte {
