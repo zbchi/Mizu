@@ -19,7 +19,7 @@ type Raft struct {
 	prs   map[uint64]*Progress
 	votes map[uint64]bool
 
-	msgs []raftpb.Message
+	msgs []*raftpb.Message
 
 	electionElapsed  int
 	heartbeatElapsed int
@@ -31,9 +31,9 @@ type Raft struct {
 
 	// Ready 相关
 	pendingHardState *HardState
-	pendingEntries   []raftpb.Entry
+	pendingEntries   []*raftpb.Entry
 	pendingSnapshot  *raftpb.Snapshot
-	committedEntries []raftpb.Entry
+	committedEntries []*raftpb.Entry
 }
 
 type Config struct {
@@ -67,14 +67,14 @@ func NewRaft(cfg Config) *Raft {
 	}
 }
 
-func (r *Raft) RestoreState(hs HardState, entries []raftpb.Entry) {
+func (r *Raft) RestoreState(hs HardState, entries []*raftpb.Entry) {
 	r.hardState = hs
 	for _, e := range entries {
 		r.raftLog.Append(e)
 	}
 }
 
-func (r *Raft) RestoreSnapshot(snap raftpb.Snapshot) {
+func (r *Raft) RestoreSnapshot(snap *raftpb.Snapshot) {
 	if snap.Index == 0 {
 		return
 	}
@@ -84,7 +84,7 @@ func (r *Raft) RestoreSnapshot(snap raftpb.Snapshot) {
 		r.hardState.Term = snap.Term
 	}
 	// 保存快照供 sendSnapshot 使用
-	r.currentSnapshot = &snap
+	r.currentSnapshot = snap
 }
 
 func (r *Raft) Tick() {
@@ -104,7 +104,7 @@ func (r *Raft) Tick() {
 	}
 }
 
-func (r *Raft) Step(m raftpb.Message) error {
+func (r *Raft) Step(m *raftpb.Message) error {
 	if m.Term > r.hardState.Term {
 		r.becomeFollower(m.Term, 0)
 	}
@@ -126,7 +126,7 @@ func (r *Raft) Propose(data []byte) bool {
 	}
 
 	index := r.raftLog.LastIndex() + 1
-	entry := raftpb.Entry{
+	entry := &raftpb.Entry{
 		Term:  r.hardState.Term,
 		Index: index,
 		Data:  data,
@@ -243,7 +243,7 @@ func (r *Raft) becomeLeader() {
 	r.bcastAppend()
 }
 
-func (r *Raft) stepFollower(m raftpb.Message) error {
+func (r *Raft) stepFollower(m *raftpb.Message) error {
 	switch m.Type {
 	case raftpb.Type_MsgVote:
 		r.handleVote(m)
@@ -255,7 +255,7 @@ func (r *Raft) stepFollower(m raftpb.Message) error {
 	return nil
 }
 
-func (r *Raft) stepCandidate(m raftpb.Message) error {
+func (r *Raft) stepCandidate(m *raftpb.Message) error {
 	switch m.Type {
 	case raftpb.Type_MsgVoteResp:
 		r.handleVoteResp(m)
@@ -269,7 +269,7 @@ func (r *Raft) stepCandidate(m raftpb.Message) error {
 	return nil
 }
 
-func (r *Raft) stepLeader(m raftpb.Message) error {
+func (r *Raft) stepLeader(m *raftpb.Message) error {
 	switch m.Type {
 	case raftpb.Type_MsgAppResp:
 		r.handleAppendResp(m)
@@ -293,7 +293,7 @@ func (r *Raft) campaign() {
 		if id == r.id {
 			continue
 		}
-		r.send(raftpb.Message{
+		r.send(&raftpb.Message{
 			Type:     raftpb.Type_MsgVote,
 			From:     r.id,
 			To:       id,
@@ -304,7 +304,7 @@ func (r *Raft) campaign() {
 	}
 }
 
-func (r *Raft) handleVote(m raftpb.Message) {
+func (r *Raft) handleVote(m *raftpb.Message) {
 	granted := r.canVote(m)
 
 	if granted {
@@ -313,7 +313,7 @@ func (r *Raft) handleVote(m raftpb.Message) {
 		r.electionElapsed = 0
 	}
 
-	r.send(raftpb.Message{
+	r.send(&raftpb.Message{
 		Type:   raftpb.Type_MsgVoteResp,
 		From:   r.id,
 		To:     m.From,
@@ -322,7 +322,7 @@ func (r *Raft) handleVote(m raftpb.Message) {
 	})
 }
 
-func (r *Raft) canVote(m raftpb.Message) bool {
+func (r *Raft) canVote(m *raftpb.Message) bool {
 	if r.hardState.Term > m.Term {
 		return false
 	}
@@ -343,7 +343,7 @@ func (r *Raft) canVote(m raftpb.Message) bool {
 	return true
 }
 
-func (r *Raft) handleVoteResp(m raftpb.Message) {
+func (r *Raft) handleVoteResp(m *raftpb.Message) {
 	r.votes[m.From] = !m.Reject
 	slog.Info("got vote", "from", m.From, "granted", !m.Reject, "id", r.id)
 
@@ -386,14 +386,14 @@ func (r *Raft) sendAppend(to uint64) {
 	prevTerm := r.raftLog.Term(prevIndex)
 	entries := r.raftLog.Slice(pr.Next, r.raftLog.LastIndex()+1)
 
-	r.send(raftpb.Message{
+	r.send(&raftpb.Message{
 		Type:     raftpb.Type_MsgApp,
 		From:     r.id,
 		To:       to,
 		Term:     r.hardState.Term,
 		LogIndex: prevIndex,
 		LogTerm:  prevTerm,
-		Entries:  refEntries(entries),
+		Entries:  entries,
 		Commit:   r.hardState.CommitIndex,
 	})
 }
@@ -404,7 +404,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		return
 	}
 
-	r.send(raftpb.Message{
+	r.send(&raftpb.Message{
 		Type:     raftpb.Type_MsgSnap,
 		From:     r.id,
 		To:       to,
@@ -413,8 +413,8 @@ func (r *Raft) sendSnapshot(to uint64) {
 	})
 }
 
-func (r *Raft) handleAppend(m raftpb.Message) {
-	reply := raftpb.Message{
+func (r *Raft) handleAppend(m *raftpb.Message) {
+	reply := &raftpb.Message{
 		Type: raftpb.Type_MsgAppResp,
 		From: r.id,
 		To:   m.From,
@@ -458,9 +458,8 @@ func (r *Raft) handleAppend(m raftpb.Message) {
 
 	// 追加日志
 	if len(m.Entries) > 0 {
-		newEntries := derefEntries(m.Entries)
-		r.raftLog.TruncateAndAppend(m.LogIndex, newEntries)
-		r.pendingEntries = append(r.pendingEntries, newEntries...)
+		r.raftLog.TruncateAndAppend(m.LogIndex, m.Entries)
+		r.pendingEntries = append(r.pendingEntries, m.Entries...)
 	}
 
 	// 更新 commit
@@ -473,7 +472,7 @@ func (r *Raft) handleAppend(m raftpb.Message) {
 	r.send(reply)
 }
 
-func (r *Raft) handleAppendResp(m raftpb.Message) {
+func (r *Raft) handleAppendResp(m *raftpb.Message) {
 	pr := r.prs[m.From]
 	if pr == nil {
 		return
@@ -501,8 +500,8 @@ func (r *Raft) handleAppendResp(m raftpb.Message) {
 	r.maybeCommit()
 }
 
-func (r *Raft) handleSnapshot(m raftpb.Message) {
-	reply := raftpb.Message{
+func (r *Raft) handleSnapshot(m *raftpb.Message) {
+	reply := &raftpb.Message{
 		Type: raftpb.Type_MsgSnapResp,
 		From: r.id,
 		To:   m.From,
@@ -524,15 +523,14 @@ func (r *Raft) handleSnapshot(m raftpb.Message) {
 	r.becomeFollower(m.Term, m.From)
 
 	// 设置待处理的快照
-	sn := *m.Snapshot
-	r.pendingSnapshot = &sn
-	r.RestoreSnapshot(sn)
+	r.pendingSnapshot = m.Snapshot
+	r.RestoreSnapshot(m.Snapshot)
 
 	reply.Reject = false
 	r.send(reply)
 }
 
-func (r *Raft) handleSnapshotResp(m raftpb.Message) {
+func (r *Raft) handleSnapshotResp(m *raftpb.Message) {
 	if m.Reject {
 		return
 	}
@@ -543,7 +541,7 @@ func (r *Raft) handleSnapshotResp(m raftpb.Message) {
 	}
 }
 
-func (r *Raft) send(m raftpb.Message) {
+func (r *Raft) send(m *raftpb.Message) {
 	r.msgs = append(r.msgs, m)
 }
 
@@ -589,24 +587,4 @@ func (r *Raft) maybeCommit() {
 	if r.raftLog.MatchTerm(mci, r.hardState.Term) {
 		r.commitTo(mci)
 	}
-}
-
-// ========================
-// 工具函数
-// ========================
-
-func refEntries(entries []raftpb.Entry) []*raftpb.Entry {
-	refs := make([]*raftpb.Entry, len(entries))
-	for i := range entries {
-		refs[i] = &entries[i]
-	}
-	return refs
-}
-
-func derefEntries(entries []*raftpb.Entry) []raftpb.Entry {
-	vals := make([]raftpb.Entry, len(entries))
-	for i, e := range entries {
-		vals[i] = *e
-	}
-	return vals
 }

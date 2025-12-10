@@ -13,7 +13,7 @@ type RaftNode struct {
 	transport Transport
 
 	//输出channel
-	commitC chan<- raftpb.Entry
+	commitC chan<- *raftpb.Entry
 	errorC  chan<- error
 
 	ctx    context.Context
@@ -21,8 +21,8 @@ type RaftNode struct {
 }
 
 type Transport interface {
-	Send(msg raftpb.Message) error
-	Receive() <-chan raftpb.Message
+	Send(msg *raftpb.Message) error
+	Receive() <-chan *raftpb.Message
 	Close() error
 }
 
@@ -31,7 +31,7 @@ type RaftNodeConfig struct {
 	Peers     []uint64
 	Storage   RaftStorage
 	Transport Transport
-	CommitC   chan<- raftpb.Entry
+	CommitC   chan<- *raftpb.Entry
 	ErrorC    chan<- error
 }
 
@@ -67,7 +67,7 @@ func restoreFromStorage(r *Raft, storage RaftStorage) error {
 	if err != nil {
 		return err
 	}
-	if snap.Index > 0 {
+	if snap != nil && snap.Index > 0 {
 		r.RestoreSnapshot(snap)
 	}
 
@@ -125,7 +125,7 @@ func (rn *RaftNode) Snapshot(index uint64, data []byte) error {
 	}
 
 	// 保存快照到 storage
-	return rn.storage.SaveSnapshot(*sn)
+	return rn.storage.SaveSnapshot(sn)
 }
 
 // 定时 tick
@@ -186,7 +186,7 @@ func (rn *RaftNode) handleReady(rd Ready) {
 
 	//持久化并应用 Snapshot
 	if rd.Snapshot != nil {
-		if err := rn.storage.SaveSnapshot(*rd.Snapshot); err != nil {
+		if err := rn.storage.SaveSnapshot(rd.Snapshot); err != nil {
 			rn.reportError(err)
 		}
 		if err := rn.storage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
@@ -208,8 +208,8 @@ func (rn *RaftNode) handleReady(rd Ready) {
 		}
 	}
 
-	//确认完成
-	rn.node.Advance()
+		// 确认完成
+		rn.node.Advance()
 }
 
 func (rn *RaftNode) reportError(err error) {

@@ -23,7 +23,7 @@ func newRaft(id uint64, peers []uint64) *Raft {
 }
 
 // readMessages 读取并清空消息队列
-func (r *Raft) readMessages() []raftpb.Message {
+func (r *Raft) readMessages() []*raftpb.Message {
 	msgs := r.msgs
 	r.msgs = nil
 	return msgs
@@ -74,7 +74,7 @@ func TestLeaderElectionWithVotes(t *testing.T) {
 	require.Equal(t, StateCandidate, r.State())
 
 	// 收到足够的投票（quorum = 3/2 + 1 = 2）
-	r.Step(raftpb.Message{
+	r.Step(&raftpb.Message{
 		Type:   raftpb.Type_MsgVoteResp,
 		From:   2,
 		To:     1,
@@ -91,15 +91,15 @@ func TestLeaderElectionWithVotes(t *testing.T) {
 func TestVoteRequest(t *testing.T) {
 	tests := []struct {
 		name        string
-		existingLog []raftpb.Entry
+		existingLog []*raftpb.Entry
 		vote        uint64
-		msg         raftpb.Message
+		msg         *raftpb.Message
 		expectGrant bool
 		expectVote  uint64
 	}{
 		{
 			name: "grant vote to candidate with up-to-date log",
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgVote,
 				From:     2,
 				To:       1,
@@ -112,11 +112,11 @@ func TestVoteRequest(t *testing.T) {
 		},
 		{
 			name: "grant vote if candidate has higher term",
-			existingLog: []raftpb.Entry{
+			existingLog: []*raftpb.Entry{
 				{Term: 1, Index: 1},
 			},
 			vote: 2, // 已经投票给了节点 2（任期 1）
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgVote,
 				From:     3,
 				To:       1,
@@ -129,11 +129,11 @@ func TestVoteRequest(t *testing.T) {
 		},
 		{
 			name: "reject vote if already voted for different candidate in same term",
-			existingLog: []raftpb.Entry{
+			existingLog: []*raftpb.Entry{
 				{Term: 1, Index: 1},
 			},
 			vote: 2, // 已经投票给了节点 2
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgVote,
 				From:     3,
 				To:       1,
@@ -146,10 +146,10 @@ func TestVoteRequest(t *testing.T) {
 		},
 		{
 			name: "reject vote if candidate log is stale",
-			existingLog: []raftpb.Entry{
+			existingLog: []*raftpb.Entry{
 				{Term: 1, Index: 1},
 			},
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgVote,
 				From:     2,
 				To:       1,
@@ -211,7 +211,7 @@ func TestLeaderStepDown(t *testing.T) {
 				r.lead = 1
 			}
 
-			msg := raftpb.Message{
+			msg := &raftpb.Message{
 				Type: tt.msgType,
 				From: 2,
 				To:   1,
@@ -225,7 +225,7 @@ func TestLeaderStepDown(t *testing.T) {
 			assert.Equal(t, uint64(3), r.Term())
 
 			// MsgApp 会设置 leader 为消息发送者
-			// MsgVote 不会设置 leader
+			// MsgVote不会设置 leader
 			if tt.msgType == raftpb.Type_MsgApp {
 				assert.Equal(t, uint64(2), r.Lead())
 			} else {
@@ -267,15 +267,15 @@ func TestLeaderPropose(t *testing.T) {
 func TestFollowerAppendEntries(t *testing.T) {
 	tests := []struct {
 		name         string
-		existingLog  []raftpb.Entry
-		msg          raftpb.Message
+		existingLog  []*raftpb.Entry
+		msg          *raftpb.Message
 		expectReject bool
 		expectIndex  uint64
 		expectCommit uint64
 	}{
 		{
 			name: "successful append",
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgApp,
 				From:     2,
 				To:       1,
@@ -294,24 +294,24 @@ func TestFollowerAppendEntries(t *testing.T) {
 		},
 		{
 			name: "prev term mismatch",
-			existingLog: []raftpb.Entry{
+			existingLog: []*raftpb.Entry{
 				{Term: 1, Index: 1},
 			},
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgApp,
 				From:     2,
 				To:       1,
 				Term:     1,
 				LogIndex: 1,
 				LogTerm:  2, // 任期不匹配
-				Entries:  []*raftpb.Entry{{Term: 2, Index: 2}},
+				Entries: []*raftpb.Entry{{Term: 2, Index: 2}},
 			},
 			expectReject: true,
 			expectIndex:  1,
 		},
 		{
 			name: "prev index beyond log",
-			msg: raftpb.Message{
+			msg: &raftpb.Message{
 				Type:     raftpb.Type_MsgApp,
 				From:     2,
 				To:       1,
@@ -394,7 +394,7 @@ func TestCommit(t *testing.T) {
 			r.lead = 1
 
 			// 添加日志
-			r.raftLog.Append(raftpb.Entry{Term: tt.logTerm, Index: 1})
+			r.raftLog.Append(&raftpb.Entry{Term: tt.logTerm, Index: 1})
 
 			// 设置每个节点的 Match
 			for i, match := range tt.matches {
@@ -420,7 +420,7 @@ func TestSnapshot(t *testing.T) {
 
 	// 添加日志
 	for i := uint64(1); i <= 5; i++ {
-		r.raftLog.Append(raftpb.Entry{Term: 1, Index: i, Data: []byte{byte(i)}})
+		r.raftLog.Append(&raftpb.Entry{Term: 1, Index: i, Data: []byte{byte(i)}})
 	}
 	r.hardState.CommitIndex = 5
 	r.raftLog.SetAppliedIndex(5)
@@ -444,7 +444,7 @@ func TestSnapshot(t *testing.T) {
 // TestSnapshotCannotCompactBeforeFirst 测试不能压缩到第一个索引之前
 func TestSnapshotCannotCompactBeforeFirst(t *testing.T) {
 	r := newRaft(1, []uint64{1})
-	r.raftLog.Append(raftpb.Entry{Term: 1, Index: 1, Data: []byte("data1")})
+	r.raftLog.Append(&raftpb.Entry{Term: 1, Index: 1, Data: []byte("data1")})
 	r.raftLog.SetAppliedIndex(1)
 
 	// 尝试压缩到索引 0，应该返回 nil
@@ -490,7 +490,7 @@ func TestHandleSnapshot(t *testing.T) {
 				Data:  []byte("snapshot data"),
 			}
 
-			msg := raftpb.Message{
+			msg := &raftpb.Message{
 				Type:     raftpb.Type_MsgSnap,
 				From:     2,
 				To:       1,
@@ -607,7 +607,7 @@ func TestIgnoreOldTermMessages(t *testing.T) {
 	r := newRaft(1, []uint64{1, 2})
 	r.hardState.Term = 3
 
-	msg := raftpb.Message{
+	msg := &raftpb.Message{
 		Type: raftpb.Type_MsgApp,
 		From: 2,
 		To:   1,
@@ -636,7 +636,7 @@ func TestRestoreState(t *testing.T) {
 		CommitIndex: 10,
 	}
 
-	entries := []raftpb.Entry{
+	entries := []*raftpb.Entry{
 		{Term: 5, Index: 1, Data: []byte("entry1")},
 		{Term: 5, Index: 2, Data: []byte("entry2")},
 	}
@@ -653,7 +653,7 @@ func TestRestoreState(t *testing.T) {
 func TestRestoreSnapshot(t *testing.T) {
 	r := newRaft(1, []uint64{1, 2})
 
-	snap := raftpb.Snapshot{
+	snap := &raftpb.Snapshot{
 		Index: 100,
 		Term:  5,
 		Data:  []byte("snapshot"),
@@ -672,7 +672,7 @@ func TestRestoreSnapshot(t *testing.T) {
 func TestEmptySnapshot(t *testing.T) {
 	r := newRaft(1, []uint64{1, 2})
 
-	snap := raftpb.Snapshot{
+	snap := &raftpb.Snapshot{
 		Index: 0, // 空快照
 		Term:  0,
 	}
@@ -689,8 +689,8 @@ func TestEmptySnapshot(t *testing.T) {
 // ============================================================
 
 // filterMessageType 按类型过滤消息
-func filterMessageType(msgs []raftpb.Message, msgType raftpb.Type) []raftpb.Message {
-	var filtered []raftpb.Message
+func filterMessageType(msgs []*raftpb.Message, msgType raftpb.Type) []*raftpb.Message {
+	var filtered []*raftpb.Message
 	for _, m := range msgs {
 		if m.Type == msgType {
 			filtered = append(filtered, m)

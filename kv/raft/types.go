@@ -56,16 +56,16 @@ type Ready struct {
 	HardState *HardState
 
 	//需要持久化到稳定存储的日志条目
-	Entries []raftpb.Entry
+	Entries []*raftpb.Entry
 
 	//需要持久化的快照
 	Snapshot *raftpb.Snapshot
 
 	//需要应用到状态机的已提交条目
-	CommittedEntries []raftpb.Entry
+	CommittedEntries []*raftpb.Entry
 
 	//需要发送给其他节点的消息
-	Messages []raftpb.Message
+	Messages []*raftpb.Message
 }
 
 func (rd Ready) IsEmpty() bool {

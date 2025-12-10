@@ -5,7 +5,7 @@ import "github.com/zbchi/linkv/proto/raftpb"
 // RaftLog 管理 Raft 日志
 type RaftLog struct {
 	// entries[0] 是哨兵条目，entries[i] 对应索引 offset+i
-	entries []raftpb.Entry
+	entries []*raftpb.Entry
 
 	// offset 是 entries[0] 的索引（快照后会增加）
 	offset uint64
@@ -17,7 +17,7 @@ type RaftLog struct {
 // NewRaftLog 创建一个新的 RaftLog
 func NewRaftLog() *RaftLog {
 	return &RaftLog{
-		entries:      []raftpb.Entry{{Term: 0, Index: 0}}, // 哨兵
+		entries:      []*raftpb.Entry{{Term: 0, Index: 0}}, // 哨兵
 		offset:       0,
 		appliedIndex: 0,
 	}
@@ -26,7 +26,7 @@ func NewRaftLog() *RaftLog {
 // NewRaftLogFromSnapshot 从快照创建 RaftLog
 func NewRaftLogFromSnapshot(snapIndex, snapTerm uint64) *RaftLog {
 	return &RaftLog{
-		entries:      []raftpb.Entry{{Term: snapTerm, Index: snapIndex}},
+		entries:      []*raftpb.Entry{{Term: snapTerm, Index: snapIndex}},
 		offset:       snapIndex,
 		appliedIndex: snapIndex,
 	}
@@ -59,12 +59,12 @@ func (l *RaftLog) Term(i uint64) uint64 {
 }
 
 // Entry 返回指定索引的日志条目
-func (l *RaftLog) Entry(i uint64) raftpb.Entry {
+func (l *RaftLog) Entry(i uint64) *raftpb.Entry {
 	return l.entries[i-l.offset]
 }
 
 // Slice 返回 [lo, hi) 范围的日志条目
-func (l *RaftLog) Slice(lo, hi uint64) []raftpb.Entry {
+func (l *RaftLog) Slice(lo, hi uint64) []*raftpb.Entry {
 	if lo < l.offset {
 		lo = l.offset
 	}
@@ -78,13 +78,13 @@ func (l *RaftLog) Slice(lo, hi uint64) []raftpb.Entry {
 }
 
 // Append 追加日志条目
-func (l *RaftLog) Append(entries ...raftpb.Entry) {
+func (l *RaftLog) Append(entries ...*raftpb.Entry) {
 	l.entries = append(l.entries, entries...)
 }
 
 // TruncateAndAppend 截断并追加日志（处理冲突）
 // prevIndex: 新条目的前一个索引
-func (l *RaftLog) TruncateAndAppend(prevIndex uint64, entries []raftpb.Entry) {
+func (l *RaftLog) TruncateAndAppend(prevIndex uint64, entries []*raftpb.Entry) {
 	pos := prevIndex - l.offset + 1
 	l.entries = append(l.entries[:pos], entries...)
 }
@@ -131,25 +131,25 @@ func (l *RaftLog) CompactTo(index, term uint64) {
 	}
 
 	// 创建新的哨兵
-	sentinel := raftpb.Entry{
+	sentinel := &raftpb.Entry{
 		Index: index,
 		Term:  term,
 	}
 
 	// 保留 index 之后的日志
-	var rest []raftpb.Entry
+	var rest []*raftpb.Entry
 	if index < last {
 		rest = l.Slice(index+1, last+1)
 	}
 
-	l.entries = append([]raftpb.Entry{sentinel}, rest...)
+	l.entries = append([]*raftpb.Entry{sentinel}, rest...)
 	l.offset = index
 }
 
 // Restore 从快照恢复日志状态
 func (l *RaftLog) Restore(snapIndex, snapTerm uint64) {
 	l.offset = snapIndex
-	l.entries = []raftpb.Entry{{Term: snapTerm, Index: snapIndex}}
+	l.entries = []*raftpb.Entry{{Term: snapTerm, Index: snapIndex}}
 	l.appliedIndex = snapIndex
 }
 

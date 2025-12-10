@@ -77,6 +77,7 @@ func TestNodeReadyChannel(t *testing.T) {
 		if len(rd.Entries) == 0 && len(rd.Messages) == 0 && rd.HardState == nil {
 			t.Log("Received empty Ready, this is OK for initial state")
 		}
+
 		// Advance to acknowledge
 		node.Advance()
 
@@ -130,7 +131,7 @@ func TestNodeStep(t *testing.T) {
 	defer cancel()
 
 	// Send a vote request message
-	msg := raftpb.Message{
+	msg := &raftpb.Message{
 		Type: raftpb.Type_MsgVote,
 		From: 2,
 		To:   1,
@@ -150,8 +151,8 @@ func TestNodeStep(t *testing.T) {
 func TestNodeSnapshot(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateLeader)
 	// 添加一些日志
-	r.raftLog.Append(raftpb.Entry{Term: 1, Index: 1, Data: []byte("data1")})
-	r.raftLog.Append(raftpb.Entry{Term: 1, Index: 2, Data: []byte("data2")})
+	r.raftLog.Append(&raftpb.Entry{Term: 1, Index: 1, Data: []byte("data1")})
+	r.raftLog.Append(&raftpb.Entry{Term: 1, Index: 2, Data: []byte("data2")})
 	r.hardState.CommitIndex = 2
 	r.raftLog.SetAppliedIndex(2)
 

@@ -21,7 +21,7 @@ type Node interface {
 	Propose(ctx context.Context, data []byte) error
 
 	//Step 处理收到的消息
-	Step(ctx context.Context, m raftpb.Message) error
+	Step(ctx context.Context, m *raftpb.Message) error
 
 	//Ready 返回待处理状态的 channel
 	Ready() <-chan Ready
@@ -38,7 +38,7 @@ type Node interface {
 
 type node struct {
 	propc    chan []byte
-	recvc    chan raftpb.Message
+	recvc    chan *raftpb.Message
 	tickc    chan struct{}
 	snapc    chan SnapshotRequest
 	readyc   chan Ready
@@ -61,7 +61,7 @@ func StartNodeWithRaft(r *Raft) Node {
 func startNode(r *Raft) Node {
 	n := &node{
 		propc:    make(chan []byte),
-		recvc:    make(chan raftpb.Message),
+		recvc:    make(chan *raftpb.Message),
 		tickc:    make(chan struct{}, 1),
 		snapc:    make(chan SnapshotRequest),
 		readyc:   make(chan Ready),
@@ -114,6 +114,12 @@ func (n *node) run() {
 
 		case <-n.stopc:
 			return
+			<-n.advancec
+			n.raft.Advance()
+			rd = Ready{}
+
+		case <-n.stopc:
+			return
 		}
 	}
 }
@@ -136,7 +142,7 @@ func (n *node) Propose(ctx context.Context, data []byte) error {
 	}
 }
 
-func (n *node) Step(ctx context.Context, m raftpb.Message) error {
+func (n *node) Step(ctx context.Context, m *raftpb.Message) error {
 	select {
 	case n.recvc <- m:
 		return nil

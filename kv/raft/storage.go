@@ -15,12 +15,12 @@ type RaftStorage interface {
 	SaveHardState(st HardState) error
 	LoadHardState() (HardState, error)
 
-	SaveEntries(entries []raftpb.Entry) error
-	LoadEntries(lo uint64, hi uint64) ([]raftpb.Entry, error)
+	SaveEntries(entries []*raftpb.Entry) error
+	LoadEntries(lo uint64, hi uint64) ([]*raftpb.Entry, error)
 	TruncateFrom(index uint64) error
 
-	SaveSnapshot(sn raftpb.Snapshot) error
-	LoadSnapshot() (raftpb.Snapshot, error)
+	SaveSnapshot(sn *raftpb.Snapshot) error
+	LoadSnapshot() (*raftpb.Snapshot, error)
 
 	MakeSnapshotData() []byte
 	ApplySnapshotData(data []byte) error
@@ -72,11 +72,11 @@ func (s *BadgerRaftStorage) LoadHardState() (HardState, error) {
 	return st, err
 }
 
-func (s *BadgerRaftStorage) SaveEntries(entries []raftpb.Entry) error {
+func (s *BadgerRaftStorage) SaveEntries(entries []*raftpb.Entry) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		for _, e := range entries {
 			key := entryKey(e.Index)
-			b, _ := proto.Marshal(&e)
+			b, _ := proto.Marshal(e)
 			if err := txn.Set(key, b); err != nil {
 				return err
 			}
@@ -103,8 +103,8 @@ func (s *BadgerRaftStorage) TruncateFrom(index uint64) error {
 	})
 }
 
-func (s *BadgerRaftStorage) LoadEntries(lo uint64, hi uint64) ([]raftpb.Entry, error) {
-	entries := make([]raftpb.Entry, 0)
+func (s *BadgerRaftStorage) LoadEntries(lo uint64, hi uint64) ([]*raftpb.Entry, error) {
+	entries := make([]*raftpb.Entry, 0)
 
 	err := s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -126,21 +126,21 @@ func (s *BadgerRaftStorage) LoadEntries(lo uint64, hi uint64) ([]raftpb.Entry, e
 
 			var e raftpb.Entry
 			proto.Unmarshal(v, &e)
-			entries = append(entries, e)
+			entries = append(entries, &e)
 		}
 		return nil
 	})
 	return entries, err
 }
 
-func (s *BadgerRaftStorage) SaveSnapshot(sn raftpb.Snapshot) error {
-	data, _ := proto.Marshal(&sn)
+func (s *BadgerRaftStorage) SaveSnapshot(sn *raftpb.Snapshot) error {
+	data, _ := proto.Marshal(sn)
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte(keySnapshot), data)
 	})
 }
 
-func (s *BadgerRaftStorage) LoadSnapshot() (raftpb.Snapshot, error) {
+func (s *BadgerRaftStorage) LoadSnapshot() (*raftpb.Snapshot, error) {
 	var sn raftpb.Snapshot
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(keySnapshot))
@@ -154,7 +154,10 @@ func (s *BadgerRaftStorage) LoadSnapshot() (raftpb.Snapshot, error) {
 		proto.Unmarshal(v, &sn)
 		return nil
 	})
-	return sn, err
+	if err != nil || sn.Index == 0 {
+		return nil, err
+	}
+	return &sn, err
 }
 
 func (s *BadgerRaftStorage) MakeSnapshotData() []byte {
