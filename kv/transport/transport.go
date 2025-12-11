@@ -52,10 +52,15 @@ type Config struct {
 // New 创建一个新的 Transport
 func New(cfg Config) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
+	// 确保 peers map 不为 nil
+	peers := cfg.Peers
+	if peers == nil {
+		peers = make(map[uint64]string)
+	}
 	return &Transport{
 		id:      cfg.ID,
 		addr:    cfg.Addr,
-		peers:   cfg.Peers,
+		peers:   peers,
 		recvC:   make(chan *raftpb.Message, 1024),
 		clients: make(map[uint64]raftpb.RaftClient),
 		conns:   make(map[uint64]*grpc.ClientConn),
@@ -111,6 +116,15 @@ func (t *Transport) Receive() <-chan *raftpb.Message {
 
 // Close 关闭 Transport
 func (t *Transport) Close() error {
+	// 检查是否已经关闭
+	select {
+	case <-t.recvC:
+		// channel 已关闭，直接返回
+		return nil
+	default:
+		// channel 未关闭，继续执行关闭逻辑
+	}
+
 	t.cancel()
 
 	// 关闭所有客户端连接
