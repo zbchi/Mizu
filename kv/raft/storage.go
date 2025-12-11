@@ -117,6 +117,16 @@ func (s *BadgerRaftStorage) LoadEntries(lo uint64, hi uint64) ([]*raftpb.Entry, 
 			item := it.Item()
 			key := item.Key()
 
+			// 检查 key 长度是否有效
+			if len(key) < len(keyEntry)+8 {
+				break
+			}
+
+			// 检查是否是 raft entry key
+			if !bytes.HasPrefix(key, []byte(keyEntry)) {
+				break
+			}
+
 			idx := binary.BigEndian.Uint64(key[len(keyEntry):])
 			if idx >= hi {
 				break

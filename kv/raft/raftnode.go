@@ -8,7 +8,7 @@ import (
 )
 
 type RaftNode struct {
-	node      Node
+	rawNode   *RawNode
 	storage   RaftStorage
 	transport Transport
 
@@ -48,10 +48,10 @@ func NewRaftNode(cfg RaftNodeConfig) (*RaftNode, error) {
 		return nil, err
 	}
 
-	node := StartNodeWithRaft(raft)
+	rawNode := NewRawNodeWithRaft(raft)
 
 	return &RaftNode{
-		node:      node,
+		rawNode:   rawNode,
 		storage:   cfg.Storage,
 		transport: cfg.Transport,
 		commitC:   cfg.CommitC,
@@ -96,7 +96,7 @@ func (rn *RaftNode) Start() {
 
 func (rn *RaftNode) Stop() {
 	rn.cancel()
-	rn.node.Stop()
+	rn.rawNode.Stop()
 	if rn.transport != nil {
 		rn.transport.Close()
 	}
@@ -105,18 +105,18 @@ func (rn *RaftNode) Stop() {
 func (rn *RaftNode) Propose(data []byte) error {
 	ctx, cancel := context.WithTimeout(rn.ctx, 3*time.Second)
 	defer cancel()
-	return rn.node.Propose(ctx, data)
+	return rn.rawNode.Propose(ctx, data)
 }
 
 func (rn *RaftNode) ProposeWithContext(ctx context.Context, data []byte) error {
-	return rn.node.Propose(ctx, data)
+	return rn.rawNode.Propose(ctx, data)
 }
 
 func (rn *RaftNode) Snapshot(index uint64, data []byte) error {
 	ctx, cancel := context.WithTimeout(rn.ctx, 3*time.Second)
 	defer cancel()
 
-	sn, err := rn.node.Snapshot(ctx, index, data)
+	sn, err := rn.rawNode.Snapshot(ctx, index, data)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (rn *RaftNode) runTicker() {
 	for {
 		select {
 		case <-ticker.C:
-			rn.node.Tick()
+			rn.rawNode.Tick()
 		case <-rn.ctx.Done():
 			return
 		}
@@ -149,7 +149,7 @@ func (rn *RaftNode) runReceiver() {
 	for {
 		select {
 		case msg := <-recvC:
-			rn.node.Step(rn.ctx, msg)
+			rn.rawNode.Step(rn.ctx, msg)
 		case <-rn.ctx.Done():
 			return
 		}
@@ -160,7 +160,7 @@ func (rn *RaftNode) runReceiver() {
 func (rn *RaftNode) runReady() {
 	for {
 		select {
-		case rd := <-rn.node.Ready():
+		case rd := <-rn.rawNode.Ready():
 			rn.handleReady(rd)
 		case <-rn.ctx.Done():
 			return
@@ -209,7 +209,7 @@ func (rn *RaftNode) handleReady(rd Ready) {
 	}
 
 		// 确认完成
-		rn.node.Advance()
+		rn.rawNode.Advance()
 }
 
 func (rn *RaftNode) reportError(err error) {
@@ -220,3 +220,19 @@ func (rn *RaftNode) reportError(err error) {
 		}
 	}
 }
+
+// State 返回当前节点的状态
+func (rn *RaftNode) State() StateType {
+	return rn.rawNode.raft.State()
+}
+
+// Term 返回当前任期
+func (rn *RaftNode) Term() uint64 {
+	return rn.rawNode.raft.Term()
+}
+
+// Lead 返回当前 leader ID
+func (rn *RaftNode) Lead() uint64 {
+	return rn.rawNode.raft.Lead()
+}
+

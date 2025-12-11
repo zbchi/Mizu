@@ -27,7 +27,7 @@ func newTestRaft(id uint64, peers []uint64, state StateType) *Raft {
 // TestNodeBasicLifecycle tests basic node start and stop
 func TestNodeBasicLifecycle(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateFollower)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 
 	// Give it a moment to start
 	time.Sleep(10 * time.Millisecond)
@@ -39,7 +39,7 @@ func TestNodeBasicLifecycle(t *testing.T) {
 // TestNodePropose tests that Propose works
 func TestNodePropose(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateLeader)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
 	// Propose some data
@@ -58,7 +58,7 @@ func TestNodePropose(t *testing.T) {
 // TestNodeReadyChannel tests that Ready channel works
 func TestNodeReadyChannel(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateLeader)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
 	// Propose to generate a Ready
@@ -89,7 +89,7 @@ func TestNodeReadyChannel(t *testing.T) {
 // TestNodeTick tests that Tick works
 func TestNodeTick(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateFollower)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
 	// Call Tick a few times
@@ -104,7 +104,7 @@ func TestNodeTick(t *testing.T) {
 // TestNodeStop tests graceful shutdown
 func TestNodeStop(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, StateFollower)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 
 	// Stop should complete within reasonable time
 	done := make(chan struct{})
@@ -124,7 +124,7 @@ func TestNodeStop(t *testing.T) {
 // TestNodeStep tests that Step works
 func TestNodeStep(t *testing.T) {
 	r := newTestRaft(1, []uint64{1, 2}, StateFollower)
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -156,7 +156,7 @@ func TestNodeSnapshot(t *testing.T) {
 	r.hardState.CommitIndex = 2
 	r.raftLog.SetAppliedIndex(2)
 
-	node := StartNodeWithRaft(r)
+	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
