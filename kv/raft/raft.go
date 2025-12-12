@@ -72,6 +72,8 @@ func (r *Raft) RestoreState(hs HardState, entries []*raftpb.Entry) {
 	for _, e := range entries {
 		r.raftLog.Append(e)
 	}
+	// Apply committed entries to generate them in the next Ready
+	r.applyCommitted()
 }
 
 func (r *Raft) RestoreSnapshot(snap *raftpb.Snapshot) {
@@ -139,6 +141,7 @@ func (r *Raft) Propose(data []byte) bool {
 	r.prs[r.id].Next = index + 1
 
 	r.bcastAppend()
+	r.maybeCommit()
 	return true
 }
 
@@ -197,6 +200,7 @@ func (r *Raft) Snapshot(index uint64, data []byte) *raftpb.Snapshot {
 
 func (r *Raft) State() StateType    { return r.state }
 func (r *Raft) Term() uint64        { return r.hardState.Term }
+func (r *Raft) Vote() uint64        { return r.hardState.Vote }
 func (r *Raft) Lead() uint64        { return r.lead }
 func (r *Raft) ID() uint64          { return r.id }
 func (r *Raft) CommitIndex() uint64 { return r.hardState.CommitIndex }

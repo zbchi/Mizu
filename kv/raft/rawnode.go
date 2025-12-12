@@ -18,6 +18,7 @@ type RawNode struct {
 	recvc    chan *raftpb.Message
 	tickc    chan struct{}
 	snapc    chan SnapshotRequest
+	campaignc chan struct{}
 	readyc   chan Ready
 	advancec chan struct{}
 	stopc    chan struct{}
@@ -39,15 +40,16 @@ func NewRawNodeWithRaft(r *Raft) *RawNode {
 
 func startRawNode(r *Raft) *RawNode {
 	n := &RawNode{
-		propc:    make(chan []byte),
-		recvc:    make(chan *raftpb.Message),
-		tickc:    make(chan struct{}, 1),
-		snapc:    make(chan SnapshotRequest),
-		readyc:   make(chan Ready),
-		advancec: make(chan struct{}),
-		stopc:    make(chan struct{}),
-		done:     make(chan struct{}),
-		raft:     r,
+		propc:     make(chan []byte),
+		recvc:     make(chan *raftpb.Message),
+		tickc:     make(chan struct{}, 1),
+		snapc:     make(chan SnapshotRequest),
+		campaignc: make(chan struct{}, 1),
+		readyc:    make(chan Ready),
+		advancec:  make(chan struct{}),
+		stopc:     make(chan struct{}),
+		done:      make(chan struct{}),
+		raft:      r,
 	}
 
 	go n.run()
@@ -99,6 +101,14 @@ func (n *RawNode) Advance() {
 	}
 }
 
+// Campaign 触发选举
+func (n *RawNode) Campaign() {
+	select {
+	case n.campaignc <- struct{}{}:
+	default:
+	}
+}
+
 // Snapshot 创建快照
 func (n *RawNode) Snapshot(ctx context.Context, index uint64, data []byte) (*raftpb.Snapshot, error) {
 	req := SnapshotRequest{
@@ -132,6 +142,8 @@ func (n *RawNode) Stop() {
 		return
 	}
 	<-n.done
+	// Close stopc so that pending operations detect the stop
+	close(n.stopc)
 }
 
 // run 主循环
@@ -165,6 +177,9 @@ func (n *RawNode) run() {
 		case req := <-n.snapc:
 			sn := n.raft.Snapshot(req.Index, req.Data)
 			req.ResultC <- sn
+
+		case <-n.campaignc:
+			n.raft.campaign()
 
 		case readyc <- rd:
 			<-n.advancec
