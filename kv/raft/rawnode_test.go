@@ -9,20 +9,15 @@ import (
 	"github.com/zbchi/linkv/proto/raftpb"
 )
 
-// newTestRaft creates a test Raft instance with optional pre-configured state
-func newTestRaft(id uint64, peers []uint64, state StateType) *Raft {
-	r := NewRaft(Config{
+// newTestRaft creates a new Raft instance for testing
+func newTestRaft(id uint64, peers []uint64, election, heartbeat int, storage *MemoryStorage) *Raft {
+	return NewRaft(Config{
 		ID:               id,
 		Peers:            peers,
-		ElectionTimeout:  10,
-		HeartbeatTimeout: 1,
+		ElectionTimeout:  election,
+		HeartbeatTimeout: heartbeat,
+		Storage:          storage,
 	})
-	r.state = state
-	if state == StateLeader {
-		r.lead = id
-		r.hardState.Term = 1
-	}
-	return r
 }
 
 // drainReady reads and processes a single Ready if available
@@ -49,7 +44,8 @@ func waitReady(node *RawNode, timeout time.Duration) (Ready, bool) {
 // TestRawNodeProposeAndConfChange ensures that RawNode.Propose and RawNode.ProposeConfChange
 // send the given proposal and ConfChange to the underlying raft.
 func TestRawNodeProposeAndConfChange3A(t *testing.T) {
-	r := newTestRaft(1, []uint64{1}, StateFollower)
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
+	r.state = StateFollower
 	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
@@ -98,7 +94,8 @@ func TestRawNodeProposeAndConfChange3A(t *testing.T) {
 // TestRawNodeStart ensures that a node can be started correctly, and can accept and commit
 // proposals.
 func TestRawNodeStart2AC(t *testing.T) {
-	r := newTestRaft(1, []uint64{1}, StateFollower)
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
+	r.state = StateFollower
 	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 
@@ -159,7 +156,7 @@ func TestRawNodeRestart2AC(t *testing.T) {
 	st := HardState{Term: 1, CommitIndex: 1}
 
 	// Create node with restored state
-	r := NewRaft(Config{ID: 1, Peers: []uint64{1}, ElectionTimeout: 10, HeartbeatTimeout: 1})
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
 	r.RestoreState(st, entries)
 
 	node := NewRawNodeWithRaft(r)
@@ -207,7 +204,7 @@ func TestRawNodeRestartFromSnapshot2C(t *testing.T) {
 	st := HardState{Term: 1, CommitIndex: 3}
 
 	// Create node with restored snapshot and state
-	r := NewRaft(Config{ID: 1, Peers: []uint64{1}, ElectionTimeout: 10, HeartbeatTimeout: 1})
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
 	r.RestoreSnapshot(snap)
 	r.RestoreState(st, entries)
 
@@ -245,7 +242,8 @@ func TestRawNodeRestartFromSnapshot2C(t *testing.T) {
 // TestRawNodeTick tests that Tick advances the logical clock.
 func TestRawNodeTick(t *testing.T) {
 	t.Run("election timeout", func(t *testing.T) {
-		r := newTestRaft(1, []uint64{1}, StateFollower)
+		r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
+		r.state = StateFollower
 		node := NewRawNodeWithRaft(r)
 		defer node.Stop()
 
@@ -278,7 +276,8 @@ func TestRawNodeTick(t *testing.T) {
 // TestRawNodeStep tests that Step properly processes incoming messages.
 func TestRawNodeStep(t *testing.T) {
 	t.Run("vote request", func(t *testing.T) {
-		r := newTestRaft(1, []uint64{1, 2}, StateFollower)
+		r := newTestRaft(1, []uint64{1, 2}, 10, 1, NewMemoryStorage())
+		r.state = StateFollower
 		node := NewRawNodeWithRaft(r)
 		defer node.Stop()
 
@@ -318,7 +317,8 @@ func TestRawNodeStep(t *testing.T) {
 	})
 
 	t.Run("append entries", func(t *testing.T) {
-		r := newTestRaft(1, []uint64{1, 2}, StateFollower)
+		r := newTestRaft(1, []uint64{1, 2}, 10, 1, NewMemoryStorage())
+		r.state = StateFollower
 		node := NewRawNodeWithRaft(r)
 		defer node.Stop()
 
@@ -353,7 +353,8 @@ func TestRawNodeStep(t *testing.T) {
 
 // TestRawNodeStop tests graceful shutdown.
 func TestRawNodeStop(t *testing.T) {
-	r := newTestRaft(1, []uint64{1}, StateFollower)
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
+	r.state = StateFollower
 	node := NewRawNodeWithRaft(r)
 
 	// Stop should complete within reasonable time
@@ -382,7 +383,8 @@ func TestRawNodeStop(t *testing.T) {
 
 // TestRawNodeContextCancel tests that operations respect context cancellation.
 func TestRawNodeContextCancel(t *testing.T) {
-	r := newTestRaft(1, []uint64{1}, StateLeader)
+	r := newTestRaft(1, []uint64{1}, 10, 1, NewMemoryStorage())
+	r.state = StateLeader
 	node := NewRawNodeWithRaft(r)
 	defer node.Stop()
 

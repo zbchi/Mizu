@@ -41,6 +41,7 @@ type Config struct {
 	Peers            []uint64
 	ElectionTimeout  int
 	HeartbeatTimeout int
+	Storage          *MemoryStorage
 }
 
 func NewRaft(cfg Config) *Raft {
@@ -109,6 +110,19 @@ func (r *Raft) Tick() {
 func (r *Raft) Step(m *raftpb.Message) error {
 	if m.Term > r.hardState.Term {
 		r.becomeFollower(m.Term, 0)
+	}
+
+	// Handle local messages (MsgHup, MsgBeat)
+	if IsLocalMsg(m.Type) {
+		switch m.Type {
+		case raftpb.Type_MsgHup:
+			r.campaign()
+		case raftpb.Type_MsgBeat:
+			if r.state == StateLeader {
+				r.bcastAppend()
+			}
+		}
+		return nil
 	}
 
 	switch r.state {
