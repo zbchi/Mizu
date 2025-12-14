@@ -41,7 +41,6 @@ type Config struct {
 	Peers            []uint64
 	ElectionTimeout  int
 	HeartbeatTimeout int
-	Storage          *MemoryStorage
 }
 
 func NewRaft(cfg Config) *Raft {

@@ -3,6 +3,7 @@ package storage
 import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/linkv/proto/linkvpb"
+	"github.com/zbchi/linkv/raft"
 )
 
 type Storage interface {
@@ -10,6 +11,9 @@ type Storage interface {
 	Stop() error
 	Reader(ctx *linkvpb.Context) (StorageReader, error)
 	Write(ctx *linkvpb.Context, batch []Modify) error
+
+	// RaftStorage returns the Raft state storage
+	RaftStorage() raft.RaftStorage
 }
 
 type StorageReader interface {

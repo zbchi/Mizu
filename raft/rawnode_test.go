@@ -16,7 +16,6 @@ func newTestRaft(id uint64, peers []uint64, election, heartbeat int, storage *Me
 		Peers:            peers,
 		ElectionTimeout:  election,
 		HeartbeatTimeout: heartbeat,
-		Storage:          storage,
 	})
 }
 

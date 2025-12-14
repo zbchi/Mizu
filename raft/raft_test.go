@@ -166,7 +166,6 @@ func newTestConfig(id uint64, peers []uint64, election, heartbeat int, storage *
 		Peers:            peers,
 		ElectionTimeout:  election,
 		HeartbeatTimeout: heartbeat,
-		Storage:          storage,
 	}
 }
 
@@ -239,7 +238,6 @@ func TestVoteFromAnyState2AA(t *testing.T) {
 			Peers:            []uint64{1, 2, 3},
 			ElectionTimeout:  10,
 			HeartbeatTimeout: 1,
-			Storage:          NewMemoryStorage(),
 		})
 		r.hardState.Term = 1
 
@@ -311,7 +309,6 @@ func TestAllServerStepdown2AB(t *testing.T) {
 			Peers:            []uint64{1, 2, 3},
 			ElectionTimeout:  10,
 			HeartbeatTimeout: 1,
-			Storage:          NewMemoryStorage(),
 		})
 		switch tt.state {
 		case StateFollower:
@@ -354,7 +351,6 @@ func TestRestoreSnapshot2C(t *testing.T) {
 		Peers:            []uint64{1, 2},
 		ElectionTimeout:  10,
 		HeartbeatTimeout: 1,
-		Storage:          NewMemoryStorage(),
 	})
 	sm.handleSnapshot(&raftpb.Message{Snapshot: s})
 
@@ -378,7 +374,6 @@ func TestRestoreIgnoreSnapshot2C(t *testing.T) {
 		Peers:            []uint64{1, 2},
 		ElectionTimeout:  10,
 		HeartbeatTimeout: 1,
-		Storage:          NewMemoryStorage(),
 	})
 	for _, e := range previousEnts {
 		sm.raftLog.Append(e)
@@ -408,7 +403,6 @@ func TestCampaignWhileLeader2AA(t *testing.T) {
 		Peers:            []uint64{1},
 		ElectionTimeout:  5,
 		HeartbeatTimeout: 1,
-		Storage:          NewMemoryStorage(),
 	}
 	r := NewRaft(cfg)
 	if r.State() != StateFollower {

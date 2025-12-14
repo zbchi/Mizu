@@ -5,10 +5,12 @@ import (
 	"github.com/zbchi/linkv/kv/config"
 	"github.com/zbchi/linkv/kv/storage"
 	"github.com/zbchi/linkv/proto/linkvpb"
+	"github.com/zbchi/linkv/raft"
 )
 
 type StandaloneStorage struct {
-	db *badger.DB
+	db           *badger.DB
+	raftStorage  raft.RaftStorage
 }
 
 func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
@@ -17,7 +19,10 @@ func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
 	if err != nil {
 		panic(err)
 	}
-	return &StandaloneStorage{db: db}
+	return &StandaloneStorage{
+		db:           db,
+		raftStorage:  raft.NewBadgerRaftStorage(db),
+	}
 }
 
 func (s *StandaloneStorage) Start() error {
@@ -26,6 +31,10 @@ func (s *StandaloneStorage) Start() error {
 
 func (s *StandaloneStorage) Stop() error {
 	return s.db.Close()
+}
+
+func (s *StandaloneStorage) RaftStorage() raft.RaftStorage {
+	return s.raftStorage
 }
 
 func (s *StandaloneStorage) Reader(ctx *linkvpb.Context) (storage.StorageReader, error) {

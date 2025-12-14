@@ -1,0 +1,98 @@
+syntax="proto3";
+
+package raftkvpb;
+
+option go_package = "github.com/zbchi/linkv/proto/raftkvpb";
+
+import "linkvpb/linkv.proto";
+
+// RaftKV command types
+enum CmdType {
+    Invalid = 0;
+    Get = 1;
+    Put = 2;
+    Delete = 3;
+    Scan = 4;
+}
+
+// RaftKV request
+message Request {
+    CmdType cmd_type = 1;
+    GetRequest get = 2;
+    PutRequest put = 3;
+    DeleteRequest delete = 4;
+    ScanRequest scan = 5;
+}
+
+message GetRequest {
+    string cf = 1;
+    bytes key = 2;
+}
+
+message PutRequest {
+    string cf = 1;
+    bytes key = 2;
+    bytes value = 3;
+}
+
+message DeleteRequest {
+    string cf = 1;
+    bytes key = 2;
+}
+
+message ScanRequest {
+    string cf = 1;
+    bytes start_key = 2;
+    uint32 limit = 3;
+}
+
+// RaftKV response
+message Response {
+    CmdType cmd_type = 1;
+    GetResponse get = 2;
+    PutResponse put = 3;
+    DeleteResponse delete = 4;
+    ScanResponse scan = 5;
+}
+
+message GetResponse {
+    bytes value = 1;
+}
+
+message PutResponse {}
+
+message DeleteResponse {}
+
+message ScanResponse {
+    repeated linkvpb.KvPair pairs = 1;
+}
+
+// RaftKV command request - combines multiple requests
+message RaftCmdRequest {
+    RequestHeader header = 1;
+    repeated Request requests = 2;
+}
+
+message RaftCmdResponse {
+    ResponseHeader header = 1;
+    repeated Response responses = 2;
+}
+
+// Headers for context and metadata
+message RequestHeader {
+    uint64 cluster_id = 1;
+    uint64 node_id = 2;
+}
+
+message ResponseHeader {
+    uint64 cluster_id = 1;
+    uint64 node_id = 2;
+    bool success = 3;
+    string error = 4;
+}
+
+// RaftKV service
+service RaftKV {
+    // Propose command through Raft consensus
+    rpc Propose(RaftCmdRequest) returns (RaftCmdResponse);
+}
