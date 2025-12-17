@@ -4,13 +4,14 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/linkv/kv/config"
 	"github.com/zbchi/linkv/kv/storage"
+	"github.com/zbchi/linkv/kv/raftstorage"
 	"github.com/zbchi/linkv/proto/linkvpb"
-	"github.com/zbchi/linkv/raft"
+	raftbadger "github.com/zbchi/linkv/raft"
 )
 
 type StandaloneStorage struct {
 	db           *badger.DB
-	raftStorage  raft.RaftStorage
+	raftStorage  raftbadger.RaftStorage
 }
 
 func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
@@ -21,7 +22,7 @@ func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
 	}
 	return &StandaloneStorage{
 		db:           db,
-		raftStorage:  raft.NewBadgerRaftStorage(db),
+		raftStorage:  raftstorage.NewStorage(db),
 	}
 }
 
@@ -33,7 +34,7 @@ func (s *StandaloneStorage) Stop() error {
 	return s.db.Close()
 }
 
-func (s *StandaloneStorage) RaftStorage() raft.RaftStorage {
+func (s *StandaloneStorage) RaftStorage() raftbadger.RaftStorage {
 	return s.raftStorage
 }
 
