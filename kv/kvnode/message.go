@@ -31,6 +31,7 @@ type RaftMessage struct {
 type RaftCmd struct {
 	Request *raftkvpb.RaftCmdRequest
 	cb      *Callback
+	index   uint64 // registered proposal index for cleanup
 }
 
 // Callback is used to notify when a command is committed and applied

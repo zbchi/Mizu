@@ -179,14 +179,16 @@ func (kn *KVNode) proposeCommand(cmd *RaftCmd) {
 		return
 	}
 
+	// Register callback BEFORE proposing to ensure we don't miss the Ready
+	kn.router.registerCallback(cmd)
+
 	// Propose to Raft
 	if err := kn.raftNode.Propose(ctx, data); err != nil {
+		// Propose failed, remove the registered callback
+		kn.router.unregisterCallback(cmd)
 		cmd.cb.Finish(nil, err)
 		return
 	}
-
-	// Store callback for when entry is committed
-	kn.router.RegisterProposal(cmd)
 }
 
 // runApplyLoop applies committed entries
@@ -263,8 +265,8 @@ func (kn *KVNode) applyEntry(entry *raftpb.Entry) {
 
 // processCommittedEntry processes a committed entry and notifies waiting client
 func (kn *KVNode) processCommittedEntry(entry *raftpb.Entry) {
-	// Notify the proposal callback
-	kn.router.NotifyProposal(entry.Index, entry.Term, nil)
+	// Trigger the callback waiting for this entry
+	kn.router.triggerCallback(entry.Index, entry.Term, nil)
 }
 
 // sendMessage sends a Raft message

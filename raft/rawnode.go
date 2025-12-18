@@ -29,16 +29,11 @@ type RawNode struct {
 
 // NewRawNode 创建一个新的 RawNode
 func NewRawNode(cfg Config) *RawNode {
-	r := NewRaft(cfg)
-	return startRawNode(r)
+	return NewRawNodeWithRaft(NewRaft(cfg))
 }
 
 // NewRawNodeWithRaft 从已有 Raft 实例创建 RawNode
 func NewRawNodeWithRaft(r *Raft) *RawNode {
-	return startRawNode(r)
-}
-
-func startRawNode(r *Raft) *RawNode {
 	n := &RawNode{
 		propc:     make(chan []byte),
 		recvc:     make(chan *raftpb.Message),
