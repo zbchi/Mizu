@@ -2,11 +2,13 @@ package kvnode
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/zbchi/linkv/kv/storage"
+	"github.com/zbchi/linkv/proto/linkvpb"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 	"github.com/zbchi/linkv/proto/raftpb"
 	"github.com/zbchi/linkv/raft"
@@ -47,6 +49,10 @@ type KVNode struct {
 	// apply state
 	appliedIndex uint64
 	sync.RWMutex
+
+	// Read optimization: ReadIndex batching and wait queue
+	readIndexBatcher *ReadIndexBatcher
+	readWaitQueue   *ReadWaitQueue
 }
 
 // NewKVNode creates a new KVNode
@@ -63,6 +69,10 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 
 	// Create router
 	kn.router = NewRouter(kn)
+
+	// Initialize read optimization
+	kn.readWaitQueue = NewReadWaitQueue()
+	kn.readIndexBatcher = NewReadIndexBatcher(kn)
 
 	// Initialize Raft node
 	if err := kn.initRaftNode(); err != nil {
@@ -110,6 +120,7 @@ func (kn *KVNode) Start() error {
 	go kn.runRaftLoop()
 	go kn.runApplyLoop()
 	go kn.runTicker()
+	go kn.readIndexBatcher.run(kn.closeCh)
 
 	return nil
 }
@@ -252,6 +263,8 @@ func (kn *KVNode) applyEntries(entries []*raftpb.Entry) {
 		kn.applyEntry(entry)
 		kn.appliedIndex = entry.Index
 	}
+	// Notify waiting read requests that appliedIndex has advanced
+	kn.notifyReadWaitQueue()
 }
 
 // applyEntry applies a single entry
@@ -294,4 +307,62 @@ func (kn *KVNode) Propose(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdRespon
 // NodeID returns the current node ID
 func (kn *KVNode) NodeID() uint64 {
 	return kn.cfg.NodeID
+}
+
+// Get performs a linearizable read using ReadIndex
+// It doesn't write to Raft log, only confirms leadership and waits for apply
+// ctx can be used to cancel the read or set a timeout
+func (kn *KVNode) Get(ctx context.Context, cf string, key []byte) ([]byte, error) {
+	// Check node state first
+	select {
+	case <-kn.closeCh:
+		return nil, ErrNodeStopped
+	default:
+	}
+
+	// Check context
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("context canceled before read: %w", ctx.Err())
+	}
+
+	// Step 1: Enqueue read request to batch
+	req := kn.readIndexBatcher.enqueue(cf, key)
+
+	// Step 2: Wait for readIndex to be assigned and appliedIndex to advance
+	select {
+	case <-req.done:
+		// Check if this was a follower read (readIndex = 0 indicates failure)
+		if req.readIndex == 0 {
+			return nil, ErrNotLeader
+		}
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %v", ErrReadTimeout, ctx.Err())
+	case <-kn.closeCh:
+		return nil, ErrNodeStopped
+	}
+
+	// Step 3: Read from state machine
+	storageCtx := &linkvpb.Context{}
+	reader, err := kn.storage.Reader(storageCtx)
+	if err != nil {
+		return nil, fmt.Errorf("create reader failed: %w", err)
+	}
+	defer reader.Close()
+
+	value, err := reader.GetCF(cf, key)
+	if err != nil {
+		return nil, fmt.Errorf("storage get failed: %w", err)
+	}
+
+	return value, nil
+}
+
+// notifyReadWaitQueue notifies the read wait queue when appliedIndex advances
+// This should be called after applying entries
+func (kn *KVNode) notifyReadWaitQueue() {
+	kn.RLock()
+	applied := kn.appliedIndex
+	kn.RUnlock()
+
+	kn.readWaitQueue.Notify(applied)
 }

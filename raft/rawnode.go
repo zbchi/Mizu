@@ -14,15 +14,16 @@ var (
 // RawNode 是 Raft 的线程安全接口
 // 它封装了 Raft 状态机，通过 channel 提供异步交互
 type RawNode struct {
-	propc    chan []byte
-	recvc    chan *raftpb.Message
-	tickc    chan struct{}
-	snapc    chan SnapshotRequest
+	propc     chan []byte
+	recvc     chan *raftpb.Message
+	tickc     chan struct{}
+	readIndexC chan chan uint64 // ReadIndex 请求 channel
+	snapc     chan SnapshotRequest
 	campaignc chan struct{}
-	readyc   chan Ready
-	advancec chan struct{}
-	stopc    chan struct{}
-	done     chan struct{}
+	readyc    chan Ready
+	advancec  chan struct{}
+	stopc     chan struct{}
+	done      chan struct{}
 
 	raft *Raft
 }
@@ -35,16 +36,17 @@ func NewRawNode(cfg Config) *RawNode {
 // NewRawNodeWithRaft 从已有 Raft 实例创建 RawNode
 func NewRawNodeWithRaft(r *Raft) *RawNode {
 	n := &RawNode{
-		propc:     make(chan []byte),
-		recvc:     make(chan *raftpb.Message),
-		tickc:     make(chan struct{}, 1),
-		snapc:     make(chan SnapshotRequest),
-		campaignc: make(chan struct{}, 1),
-		readyc:    make(chan Ready),
-		advancec:  make(chan struct{}),
-		stopc:     make(chan struct{}),
-		done:      make(chan struct{}),
-		raft:      r,
+		propc:      make(chan []byte),
+		recvc:      make(chan *raftpb.Message),
+		tickc:      make(chan struct{}, 1),
+		readIndexC: make(chan chan uint64, 1),
+		snapc:      make(chan SnapshotRequest),
+		campaignc:  make(chan struct{}, 1),
+		readyc:     make(chan Ready),
+		advancec:   make(chan struct{}),
+		stopc:      make(chan struct{}),
+		done:       make(chan struct{}),
+		raft:       r,
 	}
 
 	go n.run()
@@ -68,6 +70,27 @@ func (n *RawNode) Propose(ctx context.Context, data []byte) error {
 		return ctx.Err()
 	case <-n.stopc:
 		return ErrStopped
+	}
+}
+
+// ReadIndex 获取当前已提交的 index，用于线性一致性读
+// 返回的 index 是当前 commit index，调用者需要等待 appliedIndex >= readIndex 后才能读取状态机
+func (n *RawNode) ReadIndex(ctx context.Context) (uint64, error) {
+	resultC := make(chan uint64, 1)
+	select {
+	case n.readIndexC <- resultC:
+		select {
+		case index := <-resultC:
+			return index, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-n.stopc:
+			return 0, ErrStopped
+		}
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.stopc:
+		return 0, ErrStopped
 	}
 }
 
@@ -168,6 +191,10 @@ func (n *RawNode) run() {
 
 		case data := <-n.propc:
 			n.raft.Propose(data)
+
+		case resultC := <-n.readIndexC:
+			index := n.raft.ReadIndex()
+			resultC <- index
 
 		case req := <-n.snapc:
 			sn := n.raft.Snapshot(req.Index, req.Data)

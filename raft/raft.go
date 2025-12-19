@@ -218,6 +218,17 @@ func (r *Raft) Lead() uint64        { return r.lead }
 func (r *Raft) ID() uint64          { return r.id }
 func (r *Raft) CommitIndex() uint64 { return r.hardState.CommitIndex }
 
+// ReadIndex returns the current commit index for linearizable read.
+// It should only be called on the leader.
+// The caller must wait until appliedIndex >= commitIndex before reading from state machine.
+func (r *Raft) ReadIndex() uint64 {
+	// Only leader can serve ReadIndex requests
+	if r.state != StateLeader {
+		return 0
+	}
+	return r.hardState.CommitIndex
+}
+
 func (r *Raft) becomeFollower(term, lead uint64) {
 	r.state = StateFollower
 	r.lead = lead
