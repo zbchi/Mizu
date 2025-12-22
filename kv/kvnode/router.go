@@ -41,15 +41,6 @@ func (r *Router) Send(msg raftpb.Message) error {
 	return r.transport.Send(&msg)
 }
 
-// SendPtr sends a Raft message pointer through transport (avoid copying lock)
-func (r *Router) SendPtr(msg *raftpb.Message) error {
-	if r.transport == nil {
-		log.Printf("No transport configured, dropping message to %d", msg.To)
-		return nil
-	}
-	return r.transport.Send(msg)
-}
-
 // registerCallback stores a callback waiting for entry to be committed and applied
 func (r *Router) registerCallback(cmd *RaftCmd) {
 	r.mu.Lock()

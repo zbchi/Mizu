@@ -12,10 +12,4 @@ var (
 
 	// ErrNodeStopped is returned when the node is stopped
 	ErrNodeStopped = errors.New("node stopped")
-
-	// ErrReadFailed is returned when ReadIndex fails
-	ErrReadFailed = errors.New("read index failed")
-
-	// ErrStorageClosed is returned when storage is closed
-	ErrStorageClosed = errors.New("storage closed")
 )

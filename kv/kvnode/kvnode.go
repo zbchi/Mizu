@@ -2,7 +2,6 @@ package kvnode
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -34,17 +33,17 @@ type PeerInfo struct {
 
 // KVNode represents the Raft-based KV store node
 type KVNode struct {
-	cfg          *Config
-	raftNode     *raft.RawNode
-	storage      storage.Storage
-	raftStorage  raft.RaftStorage  // Raft state storage (persistent)
-	router       *Router
+	cfg         *Config
+	raftNode    *raft.RawNode
+	storage     storage.Storage
+	raftStorage raft.RaftStorage // Raft state storage (persistent)
+	router      *Router
 
 	// message channels
-	raftCh    chan raftpb.Message
-	cmdCh     chan *RaftCmd
-	tickCh    chan struct{}
-	closeCh   chan struct{}
+	raftCh  chan raftpb.Message
+	cmdCh   chan *RaftCmd
+	tickCh  chan struct{}
+	closeCh chan struct{}
 
 	// apply state
 	appliedIndex uint64
@@ -52,7 +51,7 @@ type KVNode struct {
 
 	// Read optimization: ReadIndex batching and wait queue
 	readIndexBatcher *ReadIndexBatcher
-	readWaitQueue   *ReadWaitQueue
+	readWaitQueue    *ReadWaitQueue
 }
 
 // NewKVNode creates a new KVNode
@@ -70,14 +69,14 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 	// Create router
 	kn.router = NewRouter(kn)
 
-	// Initialize read optimization
-	kn.readWaitQueue = NewReadWaitQueue()
-	kn.readIndexBatcher = NewReadIndexBatcher(kn)
-
 	// Initialize Raft node
 	if err := kn.initRaftNode(); err != nil {
 		return nil, err
 	}
+
+	// Initialize read optimization (after raftNode is ready)
+	kn.readWaitQueue = &ReadWaitQueue{}
+	kn.readIndexBatcher = NewReadIndexBatcher(kn)
 
 	return kn, nil
 }
@@ -289,7 +288,7 @@ func (kn *KVNode) sendMessage(msg *raftpb.Message) {
 
 // Propose proposes a command through Raft
 func (kn *KVNode) Propose(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	cb := NewCallback()
+	cb := &Callback{Done: make(chan struct{})}
 	cmd := &RaftCmd{
 		Request: req,
 		cb:      cb,
@@ -310,51 +309,49 @@ func (kn *KVNode) NodeID() uint64 {
 }
 
 // Get performs a linearizable read using ReadIndex
-// It doesn't write to Raft log, only confirms leadership and waits for apply
-// ctx can be used to cancel the read or set a timeout
-func (kn *KVNode) Get(ctx context.Context, cf string, key []byte) ([]byte, error) {
-	// Check node state first
+func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+	getReq := req.Requests[0].Get
+
+	// Enqueue and wait for ReadIndex
+	readReq := kn.readIndexBatcher.enqueue(getReq.Cf, getReq.Key)
+
 	select {
-	case <-kn.closeCh:
-		return nil, ErrNodeStopped
-	default:
-	}
-
-	// Check context
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("context canceled before read: %w", ctx.Err())
-	}
-
-	// Step 1: Enqueue read request to batch
-	req := kn.readIndexBatcher.enqueue(cf, key)
-
-	// Step 2: Wait for readIndex to be assigned and appliedIndex to advance
-	select {
-	case <-req.done:
-		// Check if this was a follower read (readIndex = 0 indicates failure)
-		if req.readIndex == 0 {
+	case <-readReq.done:
+		if readReq.readIndex == 0 {
 			return nil, ErrNotLeader
 		}
 	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: %v", ErrReadTimeout, ctx.Err())
+		return nil, ctx.Err()
 	case <-kn.closeCh:
 		return nil, ErrNodeStopped
 	}
 
-	// Step 3: Read from state machine
+	// Read from storage
 	storageCtx := &linkvpb.Context{}
 	reader, err := kn.storage.Reader(storageCtx)
 	if err != nil {
-		return nil, fmt.Errorf("create reader failed: %w", err)
+		return nil, err
 	}
 	defer reader.Close()
 
-	value, err := reader.GetCF(cf, key)
+	value, err := reader.GetCF(getReq.Cf, getReq.Key)
 	if err != nil {
-		return nil, fmt.Errorf("storage get failed: %w", err)
+		return nil, err
 	}
 
-	return value, nil
+	return &raftkvpb.RaftCmdResponse{
+		Header: &raftkvpb.ResponseHeader{
+			ClusterId: req.Header.ClusterId,
+			NodeId:    kn.NodeID(),
+			Success:   true,
+		},
+		Responses: []*raftkvpb.Response{
+			{
+				CmdType: raftkvpb.CmdType_Get,
+				Get:     &raftkvpb.GetResponse{Value: value},
+			},
+		},
+	}, nil
 }
 
 // notifyReadWaitQueue notifies the read wait queue when appliedIndex advances
