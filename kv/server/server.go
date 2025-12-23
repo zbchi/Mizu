@@ -1,23 +1,22 @@
-package kvnode
+package raft_server
 
 import (
 	"context"
 	"errors"
 
+	"github.com/zbchi/linkv/kv/kvnode"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 )
 
-// Server implements the RaftKV gRPC service
+// Server implements raftkvpb.RaftKVServer
 type Server struct {
 	raftkvpb.UnimplementedRaftKVServer
-	node *KVNode
+	node *kvnode.KVNode
 }
 
 // NewServer creates a new RaftKV server
-func NewServer(node *KVNode) *Server {
-	return &Server{
-		node: node,
-	}
+func NewServer(node *kvnode.KVNode) *Server {
+	return &Server{node: node}
 }
 
 func (s *Server) Propose(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {

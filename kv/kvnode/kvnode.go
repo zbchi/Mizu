@@ -277,8 +277,47 @@ func (kn *KVNode) applyEntry(entry *raftpb.Entry) {
 
 // processCommittedEntry processes a committed entry and notifies waiting client
 func (kn *KVNode) processCommittedEntry(entry *raftpb.Entry) {
-	// Trigger the callback waiting for this entry
+	// Decode and apply the command to storage
+	var req raftkvpb.RaftCmdRequest
+	if err := proto.Unmarshal(entry.Data, &req); err != nil {
+		kn.router.triggerCallback(entry.Index, entry.Term, err)
+		return
+	}
+
+	if err := kn.applyCommand(&req); err != nil {
+		kn.router.triggerCallback(entry.Index, entry.Term, err)
+		return
+	}
+
 	kn.router.triggerCallback(entry.Index, entry.Term, nil)
+}
+
+// applyCommand applies a single command to storage
+func (kn *KVNode) applyCommand(req *raftkvpb.RaftCmdRequest) error {
+	if len(req.Requests) == 0 {
+		return nil
+	}
+
+	ctx := &linkvpb.Context{}
+	var mods []storage.Modify
+
+	for _, r := range req.Requests {
+		switch r.CmdType {
+		case raftkvpb.CmdType_Put:
+			mods = append(mods, storage.Modify{
+				Data: storage.Put{Key: r.Put.Key, Value: r.Put.Value, Cf: r.Put.Cf},
+			})
+		case raftkvpb.CmdType_Delete:
+			mods = append(mods, storage.Modify{
+				Data: storage.Delete{Key: r.Delete.Key, Cf: r.Delete.Cf},
+			})
+		}
+	}
+
+	if len(mods) > 0 {
+		return kn.storage.Write(ctx, mods)
+	}
+	return nil
 }
 
 // sendMessage sends a Raft message
@@ -286,8 +325,8 @@ func (kn *KVNode) sendMessage(msg *raftpb.Message) {
 	kn.router.Send(*msg)
 }
 
-// Propose proposes a command through Raft
-func (kn *KVNode) Propose(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+// Put writes a command through Raft log
+func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	cb := &Callback{Done: make(chan struct{})}
 	cmd := &RaftCmd{
 		Request: req,
@@ -306,6 +345,11 @@ func (kn *KVNode) Propose(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdRespon
 // NodeID returns the current node ID
 func (kn *KVNode) NodeID() uint64 {
 	return kn.cfg.NodeID
+}
+
+// Router returns the router for setting transport
+func (kn *KVNode) Router() *Router {
+	return kn.router
 }
 
 // Get performs a linearizable read using ReadIndex

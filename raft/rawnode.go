@@ -8,13 +8,19 @@ import (
 )
 
 var (
-	ErrStopped = errors.New("raft: stopped")
+	ErrStopped  = errors.New("raft: stopped")
+	ErrNotLeader = errors.New("raft: not leader")
 )
+
+type proposeReq struct {
+	data []byte
+	err  chan error
+}
 
 // RawNode 是 Raft 的线程安全接口
 // 它封装了 Raft 状态机，通过 channel 提供异步交互
 type RawNode struct {
-	propc     chan []byte
+	propc     chan proposeReq
 	recvc     chan *raftpb.Message
 	tickc     chan struct{}
 	readIndexC chan chan uint64 // ReadIndex 请求 channel
@@ -36,7 +42,7 @@ func NewRawNode(cfg Config) *RawNode {
 // NewRawNodeWithRaft 从已有 Raft 实例创建 RawNode
 func NewRawNodeWithRaft(r *Raft) *RawNode {
 	n := &RawNode{
-		propc:      make(chan []byte),
+		propc:      make(chan proposeReq),
 		recvc:      make(chan *raftpb.Message),
 		tickc:      make(chan struct{}, 1),
 		readIndexC: make(chan chan uint64, 1),
@@ -63,9 +69,21 @@ func (n *RawNode) Tick() {
 
 // Propose 提议新数据
 func (n *RawNode) Propose(ctx context.Context, data []byte) error {
+	req := proposeReq{
+		data: data,
+		err:  make(chan error, 1),
+	}
+
 	select {
-	case n.propc <- data:
-		return nil
+	case n.propc <- req:
+		select {
+		case err := <-req.err:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-n.stopc:
+			return ErrStopped
+		}
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-n.stopc:
@@ -189,8 +207,12 @@ func (n *RawNode) run() {
 		case m := <-n.recvc:
 			n.raft.Step(m)
 
-		case data := <-n.propc:
-			n.raft.Propose(data)
+		case req := <-n.propc:
+			if n.raft.Propose(req.data) {
+				req.err <- nil
+			} else {
+				req.err <- ErrNotLeader
+			}
 
 		case resultC := <-n.readIndexC:
 			index := n.raft.ReadIndex()

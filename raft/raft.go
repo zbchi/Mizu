@@ -580,6 +580,7 @@ func (r *Raft) markHardStateChanged() {
 
 func (r *Raft) commitTo(index uint64) {
 	if index > r.hardState.CommitIndex {
+		slog.Info("commit advance", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
 		r.hardState.CommitIndex = index
 		r.markHardStateChanged()
 		r.applyCommitted()
