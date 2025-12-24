@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/zbchi/linkv/proto/raftkvpb"
@@ -13,7 +13,8 @@ import (
 func main() {
 	conn, err := grpc.Dial("127.0.0.1:2008", grpc.WithInsecure())
 	if err != nil {
-		log.Fatal("dial error:", err)
+		slog.Error("dial error", "error", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
@@ -39,9 +40,10 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal("Propose (Put) error:", err)
+		slog.Error("Propose (Put) error", "error", err)
+		os.Exit(1)
 	}
-	fmt.Println("Put success")
+	slog.Info("Put success")
 
 	// Test Get
 	resp, err := client.Propose(ctx, &raftkvpb.RaftCmdRequest{
@@ -60,10 +62,11 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal("Propose (Get) error:", err)
+		slog.Error("Propose (Get) error", "error", err)
+		os.Exit(1)
 	}
 
 	if len(resp.Responses) > 0 && resp.Responses[0].Get != nil {
-		fmt.Printf("Get success: key -> %s\n", resp.Responses[0].Get.Value)
+		slog.Info("Get success", "value", string(resp.Responses[0].Get.Value))
 	}
 }

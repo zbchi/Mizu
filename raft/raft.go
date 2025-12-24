@@ -232,15 +232,16 @@ func (r *Raft) ReadIndex() uint64 {
 func (r *Raft) becomeFollower(term, lead uint64) {
 	r.state = StateFollower
 	r.lead = lead
+	r.electionElapsed = 0
 
 	if term > r.hardState.Term {
 		r.hardState.Term = term
 		r.hardState.Vote = 0
 		r.markHardStateChanged()
+		slog.Info("node became follower", "node", r.id, "term", term, "leader", lead)
 	}
 
 	r.votes = make(map[uint64]bool)
-	r.electionElapsed = 0
 }
 
 func (r *Raft) becomeCandidate() {
@@ -254,14 +255,11 @@ func (r *Raft) becomeCandidate() {
 }
 
 func (r *Raft) becomeLeader() {
-	slog.Info("become leader",
-		"term", r.hardState.Term,
-		"commit", r.hardState.CommitIndex,
-		"id", r.id)
-
 	r.state = StateLeader
 	r.lead = r.id
 	r.heartbeatElapsed = 0
+
+	slog.Info("node became leader", "node", r.id, "term", r.hardState.Term)
 
 	for _, pr := range r.prs {
 		pr.Match = 0
@@ -309,7 +307,8 @@ func (r *Raft) stepLeader(m *raftpb.Message) error {
 
 func (r *Raft) campaign() {
 	r.becomeCandidate()
-	slog.Info("start campaign", "term", r.hardState.Term, "id", r.id)
+
+	slog.Debug("node starting campaign", "node", r.id, "term", r.hardState.Term)
 
 	// 单节点直接成为 Leader
 	if len(r.prs) == 1 {
@@ -373,7 +372,7 @@ func (r *Raft) canVote(m *raftpb.Message) bool {
 
 func (r *Raft) handleVoteResp(m *raftpb.Message) {
 	r.votes[m.From] = !m.Reject
-	slog.Info("got vote", "from", m.From, "granted", !m.Reject, "id", r.id)
+	slog.Debug("node received vote", "node", r.id, "from", m.From, "granted", !m.Reject)
 
 	granted, rejected := 0, 0
 	for _, v := range r.votes {
@@ -580,7 +579,7 @@ func (r *Raft) markHardStateChanged() {
 
 func (r *Raft) commitTo(index uint64) {
 	if index > r.hardState.CommitIndex {
-		slog.Info("commit advance", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
+		slog.Debug("commit index advanced", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
 		r.hardState.CommitIndex = index
 		r.markHardStateChanged()
 		r.applyCommitted()

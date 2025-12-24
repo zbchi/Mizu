@@ -2,7 +2,7 @@ package kvnode
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -108,7 +108,7 @@ func (kn *KVNode) initRaftNode() error {
 
 // Start starts the KVNode
 func (kn *KVNode) Start() error {
-	log.Printf("Starting KVNode node %d", kn.cfg.NodeID)
+	slog.Info("Starting KVNode", "node", kn.cfg.NodeID)
 
 	// Start storage
 	if err := kn.storage.Start(); err != nil {
@@ -126,7 +126,7 @@ func (kn *KVNode) Start() error {
 
 // Stop stops the KVNode
 func (kn *KVNode) Stop() error {
-	log.Printf("Stopping KVNode node %d", kn.cfg.NodeID)
+	slog.Info("Stopping KVNode", "node", kn.cfg.NodeID)
 
 	close(kn.closeCh)
 
@@ -210,7 +210,7 @@ func (kn *KVNode) runApplyLoop() {
 			// Step 1: Save HardState (term, vote, commit)
 			if rd.HardState != nil && !rd.HardState.IsEmpty() {
 				if err := kn.raftStorage.SaveHardState(*rd.HardState); err != nil {
-					log.Printf("Failed to save hard state: %v", err)
+					slog.Error("Failed to save hard state", "error", err)
 					// Cannot advance without persisting hard state
 					continue
 				}
@@ -219,7 +219,7 @@ func (kn *KVNode) runApplyLoop() {
 			// Step 2: Save Entries to storage
 			if len(rd.Entries) > 0 {
 				if err := kn.raftStorage.SaveEntries(rd.Entries); err != nil {
-					log.Printf("Failed to save entries: %v", err)
+					slog.Error("Failed to save entries", "error", err)
 					// Cannot advance without persisting entries
 					continue
 				}
@@ -228,11 +228,11 @@ func (kn *KVNode) runApplyLoop() {
 			// Step 3: Save/Apply Snapshot
 			if rd.Snapshot != nil {
 				if err := kn.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
-					log.Printf("Failed to save snapshot: %v", err)
+					slog.Error("Failed to save snapshot", "error", err)
 					continue
 				}
 				if err := kn.raftStorage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
-					log.Printf("Failed to apply snapshot data: %v", err)
+					slog.Error("Failed to apply snapshot data", "error", err)
 					continue
 				}
 			}

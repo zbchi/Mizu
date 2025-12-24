@@ -1,7 +1,7 @@
 package kvnode
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/zbchi/linkv/proto/raftpb"
@@ -35,7 +35,7 @@ func NewRouter(node *KVNode) *Router {
 // Send sends a Raft message through transport
 func (r *Router) Send(msg raftpb.Message) error {
 	if r.transport == nil {
-		log.Printf("No transport configured, dropping message to %d", msg.To)
+		slog.Warn("No transport configured, dropping message", "to", msg.To)
 		return nil
 	}
 	return r.transport.Send(&msg)
@@ -103,7 +103,7 @@ func (r *Router) receiveLoop() {
 		select {
 		case r.node.raftCh <- *msg:
 		default:
-			log.Printf("Raft channel full, dropping message")
+			slog.Warn("Raft channel full, dropping message")
 		}
 	}
 }

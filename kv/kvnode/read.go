@@ -2,7 +2,7 @@ package kvnode
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -34,8 +34,7 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 
 			waitTime := time.Since(req.addedAt)
 			if waitTime > 100*time.Millisecond {
-				log.Printf("Read wait took %v for key_len=%d, cf=%s",
-					waitTime, len(req.key), req.cf)
+				slog.Debug("read wait duration", "duration", waitTime, "key_len", len(req.key), "cf", req.cf)
 			}
 		} else {
 			newQueue = append(newQueue, req)
@@ -88,7 +87,7 @@ func (b *ReadIndexBatcher) enqueue(cf string, key []byte) *ReadRequest {
 	}
 
 	if batchSize > 1 {
-		log.Printf("Read batch size: %d", batchSize)
+		slog.Debug("read batch size", "size", batchSize)
 	}
 
 	return req
@@ -127,9 +126,9 @@ func (b *ReadIndexBatcher) processBatch() {
 	// Handle failure (error or not leader)
 	if err != nil || readIndex == 0 {
 		if err != nil {
-			log.Printf("ReadIndex failed: %v", err)
+			slog.Error("ReadIndex failed", "error", err)
 		} else {
-			log.Printf("Not leader, cannot serve linearizable read")
+			slog.Warn("Not leader, cannot serve linearizable read")
 		}
 		b.failRequests(requests, 0)
 		return

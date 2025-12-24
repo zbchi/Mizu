@@ -2,8 +2,9 @@ package main
 
 import (
 	"flag"
-	"log"
+	"log/slog"
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/zbchi/linkv/kv/config"
@@ -26,18 +27,21 @@ func main() {
 	flag.Parse()
 
 	if *peers == "" {
-		log.Fatal("--peers is required (format: id1@addr1,id2@addr2...)")
+		slog.Error("--peers is required", "format", "id1@addr1,id2@addr2...")
+		os.Exit(1)
 	}
 
 	peerInfos, raftPeers, err := parsePeers(*peers)
 	if err != nil {
-		log.Fatalf("Failed to parse peers: %v", err)
+		slog.Error("Failed to parse peers", "error", err)
+		os.Exit(1)
 	}
 
 	storageConf := &config.Config{DBPath: dbPathForNode(*dbPath, *id)}
 	store := standalonestorage.NewStandaloneStorage(storageConf)
 	if err := store.Start(); err != nil {
-		log.Fatalf("Failed to start storage: %v", err)
+		slog.Error("Failed to start storage", "error", err)
+		os.Exit(1)
 	}
 	defer store.Stop()
 
@@ -53,7 +57,8 @@ func main() {
 
 	node, err := kvnode.NewKVNode(kvCfg, store)
 	if err != nil {
-		log.Fatalf("Failed to create KVNode: %v", err)
+		slog.Error("Failed to create KVNode", "error", err)
+		os.Exit(1)
 	}
 
 	transCfg := transport.Config{
@@ -63,14 +68,16 @@ func main() {
 	}
 	trans := transport.New(transCfg)
 	if err := trans.Start(); err != nil {
-		log.Fatalf("Failed to start transport: %v", err)
+		slog.Error("Failed to start transport", "error", err)
+		os.Exit(1)
 	}
 	defer trans.Close()
 
 	node.Router().SetTransport(trans)
 
 	if err := node.Start(); err != nil {
-		log.Fatalf("Failed to start KVNode: %v", err)
+		slog.Error("Failed to start KVNode", "error", err)
+		os.Exit(1)
 	}
 	defer node.Stop()
 
@@ -80,12 +87,14 @@ func main() {
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		slog.Error("Failed to listen", "error", err)
+		os.Exit(1)
 	}
 
-	log.Printf("RaftKV node %d starting on %s (raft: %s)", *id, *addr, *raftAddr)
+	slog.Info("RaftKV node starting", "id", *id, "addr", *addr, "raft", *raftAddr)
 	if err := srv.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
+		slog.Error("Failed to serve", "error", err)
+		os.Exit(1)
 	}
 }
 
