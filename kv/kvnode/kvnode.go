@@ -145,7 +145,7 @@ func (kn *KVNode) Stop() error {
 
 // runTicker runs the ticker for Raft
 func (kn *KVNode) runTicker() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {

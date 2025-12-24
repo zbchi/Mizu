@@ -45,10 +45,10 @@ type Config struct {
 
 func NewRaft(cfg Config) *Raft {
 	if cfg.ElectionTimeout == 0 {
-		cfg.ElectionTimeout = 10
+		cfg.ElectionTimeout = 15
 	}
 	if cfg.HeartbeatTimeout == 0 {
-		cfg.HeartbeatTimeout = 3
+		cfg.HeartbeatTimeout = 2
 	}
 
 	prs := make(map[uint64]*Progress)
