@@ -115,7 +115,9 @@ func (r *Raft) Step(m *raftpb.Message) error {
 	if IsLocalMsg(m.Type) {
 		switch m.Type {
 		case raftpb.Type_MsgHup:
-			r.campaign()
+			if r.state != StateLeader {
+				r.campaign()
+			}
 		case raftpb.Type_MsgBeat:
 			if r.state == StateLeader {
 				r.bcastAppend()

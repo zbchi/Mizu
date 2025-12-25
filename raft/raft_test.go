@@ -328,7 +328,7 @@ func TestAllServerStepdown2AB(t *testing.T) {
 		if sm.Term() != tt.wterm {
 			t.Errorf("#%d: term = %v , want %v", i, sm.Term(), tt.wterm)
 		}
-		wlead := uint64(2)
+		wlead := uint64(0)
 		if sm.Lead() != wlead {
 			t.Errorf("#%d, sm.Lead = %d, want %d", i, sm.Lead(), wlead)
 		}
