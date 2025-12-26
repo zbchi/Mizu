@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	ErrStopped  = errors.New("raft: stopped")
+	ErrStopped   = errors.New("raft: stopped")
 	ErrNotLeader = errors.New("raft: not leader")
 )
 
@@ -20,16 +20,16 @@ type proposeReq struct {
 // RawNode 是 Raft 的线程安全接口
 // 它封装了 Raft 状态机，通过 channel 提供异步交互
 type RawNode struct {
-	propc     chan proposeReq
-	recvc     chan *raftpb.Message
-	tickc     chan struct{}
+	propc      chan proposeReq
+	recvc      chan *raftpb.Message
+	tickc      chan struct{}
 	readIndexC chan chan uint64 // ReadIndex 请求 channel
-	snapc     chan SnapshotRequest
-	campaignc chan struct{}
-	readyc    chan Ready
-	advancec  chan struct{}
-	stopc     chan struct{}
-	done      chan struct{}
+	snapc      chan SnapshotRequest
+	campaignc  chan struct{}
+	readyc     chan Ready
+	advancec   chan struct{}
+	stopc      chan struct{}
+	done       chan struct{}
 
 	raft *Raft
 }

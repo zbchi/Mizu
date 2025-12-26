@@ -149,4 +149,3 @@ func (b *ReadIndexBatcher) failRequests(requests []*ReadRequest, readIndex uint6
 		close(req.done)
 	}
 }
-

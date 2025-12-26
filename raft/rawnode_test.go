@@ -341,7 +341,8 @@ func TestRawNodeStep(t *testing.T) {
 			t.Fatalf("Step failed: %v", err)
 		}
 
-		time.Sleep(50 * time.Millisecond)
+		// Wait for message to be processed
+		drainReady(node)
 
 		// Check that entry was appended
 		if r.raftLog.LastIndex() != 1 {

@@ -162,4 +162,3 @@ func (l *RaftLog) AppliedIndex() uint64 {
 func (l *RaftLog) SetAppliedIndex(index uint64) {
 	l.appliedIndex = index
 }
-

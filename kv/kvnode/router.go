@@ -4,16 +4,16 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/proto/raftpb"
 	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/linkv/proto/raftpb"
 )
 
 // Router handles message routing for KVNode
 type Router struct {
-	node            *KVNode
-	pendingCallbacks map[uint64]*RaftCmd  // index → waiting command with callback
-	mu              sync.RWMutex
-	transport       Transport
+	node             *KVNode
+	pendingCallbacks map[uint64]*RaftCmd // index → waiting command with callback
+	mu               sync.RWMutex
+	transport        Transport
 }
 
 // Transport defines the interface for sending and receiving Raft messages
@@ -27,7 +27,7 @@ type Transport interface {
 // NewRouter creates a new Router
 func NewRouter(node *KVNode) *Router {
 	return &Router{
-		node:            node,
+		node:             node,
 		pendingCallbacks: make(map[uint64]*RaftCmd),
 	}
 }
