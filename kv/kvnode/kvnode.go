@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zbchi/linkv/kv/region"
 	"github.com/zbchi/linkv/kv/storage"
+	"github.com/zbchi/linkv/proto"
 	"github.com/zbchi/linkv/proto/linkvpb"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 	"github.com/zbchi/linkv/proto/raftpb"
 	"github.com/zbchi/linkv/raft"
-	"google.golang.org/protobuf/proto"
+	protov2 "google.golang.org/protobuf/proto"
 )
 
 // Config represents the KVNode configuration
@@ -22,22 +24,16 @@ type Config struct {
 	StoragePath   string
 	ElectionTick  int
 	HeartbeatTick int
-	Peers         []PeerInfo
+	Peers         []proto.PeerInfo
 }
 
-// PeerInfo represents peer information
-type PeerInfo struct {
-	NodeID uint64
-	Addr   string
-}
-
-// KVNode represents the Raft-based KV store node
+// KVNode represents the Multi-Raft KV store node
 type KVNode struct {
-	cfg         *Config
-	raftNode    *raft.RawNode
-	storage     storage.Storage
-	raftStorage raft.RaftStorage // Raft state storage (persistent)
-	router      *Router
+	cfg       *Config
+	storage   storage.Storage
+	router    *Router
+	peers     map[uint64]*Peer // regionID -> Peer
+	regionMap *region.RegionMap
 
 	// message channels
 	raftCh  chan raftpb.Message
@@ -45,8 +41,6 @@ type KVNode struct {
 	tickCh  chan struct{}
 	closeCh chan struct{}
 
-	// apply state
-	appliedIndex uint64
 	sync.RWMutex
 
 	// Read optimization: ReadIndex batching and wait queue
@@ -57,51 +51,52 @@ type KVNode struct {
 // NewKVNode creates a new KVNode
 func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 	kn := &KVNode{
-		cfg:          cfg,
-		storage:      store,
-		raftCh:       make(chan raftpb.Message, 1024),
-		cmdCh:        make(chan *RaftCmd, 128),
-		tickCh:       make(chan struct{}, 1),
-		closeCh:      make(chan struct{}),
-		appliedIndex: 0,
+		cfg:       cfg,
+		storage:   store,
+		raftCh:    make(chan raftpb.Message, 1024),
+		cmdCh:     make(chan *RaftCmd, 128),
+		tickCh:    make(chan struct{}, 1),
+		closeCh:   make(chan struct{}),
+		peers:     make(map[uint64]*Peer),
+		regionMap: region.NewRegionMap(),
 	}
 
 	// Create router
 	kn.router = NewRouter(kn)
 
-	// Initialize Raft node
-	if err := kn.initRaftNode(); err != nil {
+	// Initialize peers
+	if err := kn.initPeers(); err != nil {
 		return nil, err
 	}
 
-	// Initialize read optimization (after raftNode is ready)
+	// Initialize read optimization
 	kn.readWaitQueue = &ReadWaitQueue{}
 	kn.readIndexBatcher = NewReadIndexBatcher(kn)
 
 	return kn, nil
 }
 
-// initRaftNode initializes the Raft node
-func (kn *KVNode) initRaftNode() error {
-	// Collect peer IDs
-	peerIDs := make([]uint64, len(kn.cfg.Peers))
-	for i, peer := range kn.cfg.Peers {
-		peerIDs[i] = peer.NodeID
+// initPeers initializes the default region peer
+func (kn *KVNode) initPeers() error {
+	// Create default region (region 1) with full key range
+	defaultRegion := &region.Region{
+		ID:       1,
+		StartKey: []byte{},
+		EndKey:   []byte{},
+		Peers:    kn.cfg.Peers,
+		Leader:   kn.cfg.Peers[0],
 	}
 
-	// Get persistent Raft storage from KV storage
-	kn.raftStorage = kn.storage.RaftStorage()
-
-	// Create Raft config
-	raftCfg := raft.Config{
-		ID:               kn.cfg.NodeID,
-		Peers:            peerIDs,
-		ElectionTimeout:  kn.cfg.ElectionTick,
-		HeartbeatTimeout: kn.cfg.HeartbeatTick,
+	// Add to region map
+	if err := kn.regionMap.AddRegion(defaultRegion); err != nil {
+		return err
 	}
 
-	// Create RawNode
-	kn.raftNode = raft.NewRawNode(raftCfg)
+	// Create peer for region 1
+	raftStorage := kn.storage.RaftStorage()
+	peer := NewPeer(defaultRegion, kn.cfg.NodeID, kn, raftStorage)
+
+	kn.peers[defaultRegion.ID] = peer
 
 	return nil
 }
@@ -117,7 +112,6 @@ func (kn *KVNode) Start() error {
 
 	// Start worker goroutines
 	go kn.runRaftLoop()
-	go kn.runApplyLoop()
 	go kn.runTicker()
 	go kn.readIndexBatcher.run(kn.closeCh)
 
@@ -130,10 +124,12 @@ func (kn *KVNode) Stop() error {
 
 	close(kn.closeCh)
 
-	// Stop Raft node
-	if kn.raftNode != nil {
-		kn.raftNode.Stop()
+	// Stop all peers
+	kn.RLock()
+	for _, peer := range kn.peers {
+		peer.Stop()
 	}
+	kn.RUnlock()
 
 	// Stop storage
 	if kn.storage != nil {
@@ -143,7 +139,14 @@ func (kn *KVNode) Stop() error {
 	return nil
 }
 
-// runTicker runs the ticker for Raft
+// getPeer returns peer by regionID
+func (kn *KVNode) getPeer(regionID uint64) *Peer {
+	kn.RLock()
+	defer kn.RUnlock()
+	return kn.peers[regionID]
+}
+
+// runTicker runs the ticker for all peers
 func (kn *KVNode) runTicker() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -161,135 +164,148 @@ func (kn *KVNode) runTicker() {
 	}
 }
 
-// runRaftLoop runs the main Raft loop
+// runRaftLoop runs the main Raft loop for all peers (TiKV style)
 func (kn *KVNode) runRaftLoop() {
 	ctx := context.Background()
 	for {
 		select {
+		case <-kn.tickCh:
+			// Tick all peers
+			kn.RLock()
+			for _, peer := range kn.peers {
+				peer.Tick()
+			}
+			kn.RUnlock()
+
 		case msg := <-kn.raftCh:
-			kn.raftNode.Step(ctx, &msg)
+			// Route message to peer by regionID
+			peer := kn.getPeer(msg.RegionId)
+			if peer != nil {
+				peer.Step(ctx, &msg)
+			}
+
 		case cmd := <-kn.cmdCh:
 			kn.proposeCommand(cmd)
-		case <-kn.tickCh:
-			kn.raftNode.Tick()
+
 		case <-kn.closeCh:
 			return
+
+		default:
+			// No pending events, check and process ready for all peers
+			kn.RLock()
+			for _, peer := range kn.peers {
+				if !peer.HasReady() {
+					continue
+				}
+				rd := <-peer.Ready()
+				if err := kn.handleReady(peer, rd); err != nil {
+					slog.Error("Failed to handle ready", "region", peer.RegionID(), "error", err)
+					continue
+				}
+				peer.Advance()
+			}
+			kn.RUnlock()
 		}
 	}
 }
 
-// proposeCommand proposes a command to Raft
+// handleReady processes raft ready state for a peer
+func (kn *KVNode) handleReady(peer *Peer, rd raft.Ready) error {
+	// Save HardState
+	if rd.HardState != nil && !rd.HardState.IsEmpty() {
+		if err := peer.raftStorage.SaveHardState(*rd.HardState); err != nil {
+			return err
+		}
+	}
+
+	// Save Entries
+	if len(rd.Entries) > 0 {
+		if err := peer.raftStorage.SaveEntries(rd.Entries); err != nil {
+			return err
+		}
+	}
+
+	// Save/Apply Snapshot
+	if rd.Snapshot != nil {
+		if err := peer.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
+			return err
+		}
+		if err := peer.raftStorage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
+			return err
+		}
+	}
+
+	// Send messages
+	for _, msg := range rd.Messages {
+		msg.RegionId = peer.RegionID()
+		kn.router.Send(*msg)
+	}
+
+	// Apply committed entries
+	if len(rd.CommittedEntries) > 0 {
+		kn.applyPeerEntries(peer, rd.CommittedEntries)
+	}
+
+	return nil
+}
+
+// proposeCommand proposes a command to the correct region peer
 func (kn *KVNode) proposeCommand(cmd *RaftCmd) {
 	ctx := context.Background()
 
+	// Route to region peer (currently all keys go to region 1)
+	peer := kn.getPeer(1) // TODO: route by key
+	if peer == nil {
+		cmd.cb.Finish(nil, ErrNotLeader)
+		return
+	}
+
 	// Marshal the request
-	data, err := proto.Marshal(cmd.Request)
+	data, err := protov2.Marshal(cmd.Request)
 	if err != nil {
 		cmd.cb.Finish(nil, err)
 		return
 	}
 
-	// Register callback BEFORE proposing to ensure we don't miss the Ready
-	kn.router.registerCallback(cmd)
+	// Register callback BEFORE proposing
+	kn.router.registerCallback(cmd, peer.RegionID())
 
 	// Propose to Raft
-	if err := kn.raftNode.Propose(ctx, data); err != nil {
-		// Propose failed, remove the registered callback
-		kn.router.unregisterCallback(cmd)
+	if err := peer.Propose(ctx, data); err != nil {
+		kn.router.unregisterCallback(cmd, peer.RegionID())
 		cmd.cb.Finish(nil, err)
 		return
 	}
 }
 
-// runApplyLoop applies committed entries
-func (kn *KVNode) runApplyLoop() {
-	readyc := kn.raftNode.Ready()
-	for {
-		select {
-		case rd := <-readyc:
-			// Step 1: Save HardState (term, vote, commit)
-			if rd.HardState != nil && !rd.HardState.IsEmpty() {
-				if err := kn.raftStorage.SaveHardState(*rd.HardState); err != nil {
-					slog.Error("Failed to save hard state", "error", err)
-					// Cannot advance without persisting hard state
-					continue
-				}
-			}
-
-			// Step 2: Save Entries to storage
-			if len(rd.Entries) > 0 {
-				if err := kn.raftStorage.SaveEntries(rd.Entries); err != nil {
-					slog.Error("Failed to save entries", "error", err)
-					// Cannot advance without persisting entries
-					continue
-				}
-			}
-
-			// Step 3: Save/Apply Snapshot
-			if rd.Snapshot != nil {
-				if err := kn.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
-					slog.Error("Failed to save snapshot", "error", err)
-					continue
-				}
-				if err := kn.raftStorage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
-					slog.Error("Failed to apply snapshot data", "error", err)
-					continue
-				}
-			}
-
-			// Step 4: Send messages to other nodes
-			for _, msg := range rd.Messages {
-				kn.sendMessage(msg)
-			}
-
-			// Step 5: Apply committed entries to state machine
-			if len(rd.CommittedEntries) > 0 {
-				kn.applyEntries(rd.CommittedEntries)
-			}
-
-			// Step 6: Advance Raft (must be done after all persistence)
-			kn.raftNode.Advance()
-
-		case <-kn.closeCh:
-			return
-		}
-	}
-}
-
-// applyEntries applies committed entries to storage
-func (kn *KVNode) applyEntries(entries []*raftpb.Entry) {
+// applyPeerEntries applies committed entries for a specific peer
+func (kn *KVNode) applyPeerEntries(peer *Peer, entries []*raftpb.Entry) {
 	for _, entry := range entries {
-		kn.applyEntry(entry)
-		kn.appliedIndex = entry.Index
+		kn.applyPeerEntry(peer, entry)
+		peer.appliedIndex = entry.Index
 	}
-	// Notify waiting read requests that appliedIndex has advanced
-	kn.notifyReadWaitQueue()
+	// Notify waiting read requests
+	kn.notifyReadWaitQueueForPeer(peer.RegionID())
 }
 
-// applyEntry applies a single entry
-func (kn *KVNode) applyEntry(entry *raftpb.Entry) {
-	// In this simplified implementation, all entries are normal KV operations
+// applyPeerEntry applies a single entry for a specific peer
+func (kn *KVNode) applyPeerEntry(peer *Peer, entry *raftpb.Entry) {
 	if len(entry.Data) == 0 {
 		return
 	}
-	kn.processCommittedEntry(entry)
-}
 
-// processCommittedEntry processes a committed entry and notifies waiting client
-func (kn *KVNode) processCommittedEntry(entry *raftpb.Entry) {
-	// Decode and apply the command to storage
 	var req raftkvpb.RaftCmdRequest
-	if err := proto.Unmarshal(entry.Data, &req); err != nil {
-		kn.router.triggerCallback(entry.Index, entry.Term, err)
+	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
+		kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
 	if err := kn.applyCommand(&req); err != nil {
-		kn.router.triggerCallback(entry.Index, entry.Term, err)
+		kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	kn.router.triggerCallback(entry.Index, entry.Term, nil)
+	kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
 }
 
 // applyCommand applies a single command to storage
@@ -318,11 +334,6 @@ func (kn *KVNode) applyCommand(req *raftkvpb.RaftCmdRequest) error {
 		return kn.storage.Write(ctx, mods)
 	}
 	return nil
-}
-
-// sendMessage sends a Raft message
-func (kn *KVNode) sendMessage(msg *raftpb.Message) {
-	kn.router.Send(*msg)
 }
 
 // Put writes a command through Raft log
@@ -398,12 +409,10 @@ func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftk
 	}, nil
 }
 
-// notifyReadWaitQueue notifies the read wait queue when appliedIndex advances
-// This should be called after applying entries
-func (kn *KVNode) notifyReadWaitQueue() {
-	kn.RLock()
-	applied := kn.appliedIndex
-	kn.RUnlock()
-
-	kn.readWaitQueue.Notify(applied)
+// notifyReadWaitQueueForPeer notifies the read wait queue when a peer's appliedIndex advances
+func (kn *KVNode) notifyReadWaitQueueForPeer(regionID uint64) {
+	peer := kn.getPeer(regionID)
+	if peer != nil {
+		kn.readWaitQueue.Notify(peer.appliedIndex)
+	}
 }

@@ -8,10 +8,16 @@ import (
 	"github.com/zbchi/linkv/proto/raftpb"
 )
 
+// callbackKey uniquely identifies a pending callback
+type callbackKey struct {
+	regionID uint64
+	index    uint64
+}
+
 // Router handles message routing for KVNode
 type Router struct {
 	node             *KVNode
-	pendingCallbacks map[uint64]*RaftCmd // index → waiting command with callback
+	pendingCallbacks map[callbackKey]*RaftCmd
 	mu               sync.RWMutex
 	transport        Transport
 }
@@ -28,7 +34,7 @@ type Transport interface {
 func NewRouter(node *KVNode) *Router {
 	return &Router{
 		node:             node,
-		pendingCallbacks: make(map[uint64]*RaftCmd),
+		pendingCallbacks: make(map[callbackKey]*RaftCmd),
 	}
 }
 
@@ -42,37 +48,50 @@ func (r *Router) Send(msg raftpb.Message) error {
 }
 
 // registerCallback stores a callback waiting for entry to be committed and applied
-func (r *Router) registerCallback(cmd *RaftCmd) {
+func (r *Router) registerCallback(cmd *RaftCmd, regionID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Predict the index this entry will get (assuming sequential)
-	index := r.node.appliedIndex + 1
-	r.pendingCallbacks[index] = cmd
+	peer := r.node.getPeer(regionID)
+	if peer == nil {
+		return
+	}
+
+	// Predict the index this entry will get
+	index := peer.appliedIndex + 1
+	key := callbackKey{regionID: regionID, index: index}
+	r.pendingCallbacks[key] = cmd
 	cmd.index = index
 }
 
 // unregisterCallback removes a callback (used when propose fails)
-func (r *Router) unregisterCallback(cmd *RaftCmd) {
+func (r *Router) unregisterCallback(cmd *RaftCmd, regionID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	delete(r.pendingCallbacks, cmd.index)
+	key := callbackKey{regionID: regionID, index: cmd.index}
+	delete(r.pendingCallbacks, key)
 }
 
 // triggerCallback notifies a waiting callback when its entry is committed and applied
 func (r *Router) triggerCallback(index uint64, term uint64, err error) {
+	// Legacy method for compatibility, assumes region 1
+	r.triggerCallbackForRegion(1, index, term, err)
+}
+
+// triggerCallbackForRegion notifies a waiting callback for a specific region
+func (r *Router) triggerCallbackForRegion(regionID uint64, index uint64, term uint64, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cmd, ok := r.pendingCallbacks[index]
+	key := callbackKey{regionID: regionID, index: index}
+	cmd, ok := r.pendingCallbacks[key]
 	if !ok {
 		return
 	}
 
-	delete(r.pendingCallbacks, index)
+	delete(r.pendingCallbacks, key)
 
-	// TODO: Build response from applied entry
 	resp := &raftkvpb.RaftCmdResponse{
 		Header: &raftkvpb.ResponseHeader{
 			ClusterId: cmd.Request.Header.ClusterId,

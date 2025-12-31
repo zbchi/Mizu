@@ -33,6 +33,7 @@ message Message{
     repeated Entry entries=8;
     bool reject=9;
     uint64 rejectHint=10;
+    uint64 region_id=12;
 
     Snapshot snapshot=11;
 }

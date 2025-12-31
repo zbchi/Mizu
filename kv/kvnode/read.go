@@ -121,7 +121,14 @@ func (b *ReadIndexBatcher) processBatch() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	readIndex, err := b.kvnode.raftNode.ReadIndex(ctx)
+	// TODO: support multiple regions, currently only region 1
+	peer := b.kvnode.getPeer(1)
+	if peer == nil {
+		b.failRequests(requests, 0)
+		return
+	}
+
+	readIndex, err := peer.ReadIndex(ctx)
 
 	// Handle failure (error or not leader)
 	if err != nil || readIndex == 0 {
@@ -139,7 +146,7 @@ func (b *ReadIndexBatcher) processBatch() {
 		req.readIndex = readIndex
 		b.kvnode.readWaitQueue.Add(req)
 	}
-	b.kvnode.notifyReadWaitQueue()
+	b.kvnode.notifyReadWaitQueueForPeer(1)
 }
 
 // failRequests marks all requests as failed

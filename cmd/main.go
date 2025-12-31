@@ -12,6 +12,7 @@ import (
 	raft_server "github.com/zbchi/linkv/kv/server"
 	standalonestorage "github.com/zbchi/linkv/kv/storage/standalone_storage"
 	"github.com/zbchi/linkv/kv/transport"
+	"github.com/zbchi/linkv/proto"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 
 	"google.golang.org/grpc"
@@ -98,8 +99,8 @@ func main() {
 	}
 }
 
-func parsePeers(peersStr string) ([]kvnode.PeerInfo, map[uint64]string, error) {
-	var peerInfos []kvnode.PeerInfo
+func parsePeers(peersStr string) ([]proto.PeerInfo, map[uint64]string, error) {
+	var peerInfos []proto.PeerInfo
 	raftPeers := make(map[uint64]string)
 
 	for _, p := range splitPeers(peersStr) {
@@ -107,7 +108,7 @@ func parsePeers(peersStr string) ([]kvnode.PeerInfo, map[uint64]string, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		peerInfos = append(peerInfos, kvnode.PeerInfo{NodeID: id, Addr: addr})
+		peerInfos = append(peerInfos, proto.PeerInfo{NodeID: id, Addr: addr})
 		raftPeers[id] = addr
 	}
 

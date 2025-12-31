@@ -48,7 +48,7 @@ func NewRawNodeWithRaft(r *Raft) *RawNode {
 		readIndexC: make(chan chan uint64, 1),
 		snapc:      make(chan SnapshotRequest),
 		campaignc:  make(chan struct{}, 1),
-		readyc:     make(chan Ready),
+		readyc:     make(chan Ready, 1),
 		advancec:   make(chan struct{}),
 		stopc:      make(chan struct{}),
 		done:       make(chan struct{}),
@@ -135,6 +135,11 @@ func (n *RawNode) Advance() {
 	case n.advancec <- struct{}{}:
 	case <-n.stopc:
 	}
+}
+
+// HasReady 检查是否有待处理的 Ready（非阻塞）
+func (n *RawNode) HasReady() bool {
+	return len(n.readyc) > 0
 }
 
 // Campaign 触发选举

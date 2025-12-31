@@ -6,16 +6,16 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/zbchi/linkv/kv/kvnode"
+	"github.com/zbchi/linkv/proto"
 )
 
 // Region represents a data partition
 type Region struct {
-	ID       uint64              // region id
-	StartKey []byte              // start key (inclusive)
-	EndKey   []byte              // end key (exclusive)
-	Peers    []kvnode.PeerInfo   // peer replicas
-	Leader   kvnode.PeerInfo     // leader peer
+	ID       uint64           // region id
+	StartKey []byte           // start key (inclusive)
+	EndKey   []byte           // end key (exclusive)
+	Peers    []proto.PeerInfo // peer replicas
+	Leader   proto.PeerInfo   // leader peer
 }
 
 // Contains checks if key is in this region's range
