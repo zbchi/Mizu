@@ -42,10 +42,6 @@ type KVNode struct {
 	closeCh chan struct{}
 
 	sync.RWMutex
-
-	// Read optimization: ReadIndex batching and wait queue
-	readIndexBatcher *ReadIndexBatcher
-	readWaitQueue    *ReadWaitQueue
 }
 
 // NewKVNode creates a new KVNode
@@ -68,10 +64,6 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 	if err := kn.initPeers(); err != nil {
 		return nil, err
 	}
-
-	// Initialize read optimization
-	kn.readWaitQueue = &ReadWaitQueue{}
-	kn.readIndexBatcher = NewReadIndexBatcher(kn)
 
 	return kn, nil
 }
@@ -113,7 +105,6 @@ func (kn *KVNode) Start() error {
 	// Start worker goroutines
 	go kn.runRaftLoop()
 	go kn.runTicker()
-	go kn.readIndexBatcher.run(kn.closeCh)
 
 	return nil
 }
@@ -284,8 +275,8 @@ func (kn *KVNode) applyPeerEntries(peer *Peer, entries []*raftpb.Entry) {
 		kn.applyPeerEntry(peer, entry)
 		peer.appliedIndex = entry.Index
 	}
-	// Notify waiting read requests
-	kn.notifyReadWaitQueueForPeer(peer.RegionID())
+	// Notify waiting read requests for this peer
+	peer.notifyReadWaitQueue()
 }
 
 // applyPeerEntry applies a single entry for a specific peer
@@ -367,18 +358,21 @@ func (kn *KVNode) Router() *Router {
 func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	getReq := req.Requests[0].Get
 
-	// Enqueue and wait for ReadIndex
-	readReq := kn.readIndexBatcher.enqueue(getReq.Cf, getReq.Key)
+	// Route to peer (currently only region 1)
+	peer := kn.getPeer(1)
+	if peer == nil {
+		return nil, ErrNotLeader
+	}
 
-	select {
-	case <-readReq.done:
-		if readReq.readIndex == 0 {
-			return nil, ErrNotLeader
-		}
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-kn.closeCh:
-		return nil, ErrNodeStopped
+	// Get read index directly from peer
+	readIndex, err := peer.ReadIndex(ctx)
+	if err != nil || readIndex == 0 {
+		return nil, ErrNotLeader
+	}
+
+	// Wait for appliedIndex to reach readIndex
+	if err := peer.waitForReadIndex(ctx, readIndex); err != nil {
+		return nil, err
 	}
 
 	// Read from storage
@@ -407,12 +401,4 @@ func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftk
 			},
 		},
 	}, nil
-}
-
-// notifyReadWaitQueueForPeer notifies the read wait queue when a peer's appliedIndex advances
-func (kn *KVNode) notifyReadWaitQueueForPeer(regionID uint64) {
-	peer := kn.getPeer(regionID)
-	if peer != nil {
-		kn.readWaitQueue.Notify(peer.appliedIndex)
-	}
 }

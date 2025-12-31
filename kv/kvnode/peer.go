@@ -18,7 +18,8 @@ type Peer struct {
 	raftStorage  raft.RaftStorage
 	appliedIndex uint64
 
-	node *KVNode
+	node          *KVNode
+	readWaitQueue *ReadWaitQueue
 }
 
 // NewPeer creates a new peer for a region
@@ -36,11 +37,12 @@ func NewPeer(reg *region.Region, nodeID uint64, node *KVNode, raftStorage raft.R
 	raftNode := raft.NewRawNode(raftCfg)
 
 	return &Peer{
-		region:       reg,
-		raftNode:     raftNode,
-		raftStorage:  raftStorage,
-		appliedIndex: 0,
-		node:         node,
+		region:        reg,
+		raftNode:      raftNode,
+		raftStorage:   raftStorage,
+		appliedIndex:  0,
+		node:          node,
+		readWaitQueue: &ReadWaitQueue{},
 	}
 }
 
@@ -181,4 +183,25 @@ func (p *Peer) applyCommand(req *raftkvpb.RaftCmdRequest) error {
 // GetAppliedIndex returns the current applied index
 func (p *Peer) GetAppliedIndex() uint64 {
 	return p.appliedIndex
+}
+
+// notifyReadWaitQueue notifies the read wait queue when appliedIndex advances
+func (p *Peer) notifyReadWaitQueue() {
+	p.readWaitQueue.Notify(p.appliedIndex)
+}
+
+// waitForReadIndex waits until appliedIndex reaches readIndex
+func (p *Peer) waitForReadIndex(ctx context.Context, readIndex uint64) error {
+	req := &ReadRequest{
+		readIndex: readIndex,
+		done:      make(chan struct{}),
+	}
+	p.readWaitQueue.Add(req)
+
+	select {
+	case <-req.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

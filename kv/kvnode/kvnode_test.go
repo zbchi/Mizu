@@ -103,12 +103,22 @@ func notifiedBefore(ch chan struct{}, timeout time.Duration) bool {
 }
 
 func TestRouterCallbacks(t *testing.T) {
+	// Create a minimal mock KVNode with peers
 	node := &KVNode{
 		cfg: &Config{
 			NodeID: 1,
 		},
-		appliedIndex: 5,
+		peers: make(map[uint64]*Peer),
 	}
+
+	// Create a mock peer with appliedIndex
+	peer := &Peer{
+		region:        nil, // not used in this test
+		appliedIndex:  5,
+		readWaitQueue: &ReadWaitQueue{},
+	}
+	node.peers[1] = peer
+
 	router := NewRouter(node)
 
 	cb := &Callback{Done: make(chan struct{})}
@@ -121,14 +131,14 @@ func TestRouterCallbacks(t *testing.T) {
 		cb: cb,
 	}
 
-	// Register callback
-	router.registerCallback(cmd)
+	// Register callback for region 1
+	router.registerCallback(cmd, 1)
 	if cmd.index != 6 {
 		t.Fatalf("expected index 6, got %d", cmd.index)
 	}
 
 	// Trigger callback with success
-	router.triggerCallback(6, 1, nil)
+	router.triggerCallbackForRegion(1, 6, 1, nil)
 
 	select {
 	case <-cb.Done:
@@ -149,7 +159,7 @@ func TestRouterCallbacks(t *testing.T) {
 	}
 
 	// Trigger callback with error - no callback registered for index 7, so nothing happens
-	router.triggerCallback(7, 1, errors.New("test error"))
+	router.triggerCallbackForRegion(1, 7, 1, errors.New("test error"))
 }
 
 func TestRouterCallbackError(t *testing.T) {
@@ -157,8 +167,17 @@ func TestRouterCallbackError(t *testing.T) {
 		cfg: &Config{
 			NodeID: 1,
 		},
-		appliedIndex: 10,
+		peers: make(map[uint64]*Peer),
 	}
+
+	// Create a mock peer with appliedIndex
+	peer := &Peer{
+		region:        nil, // not used in this test
+		appliedIndex:  10,
+		readWaitQueue: &ReadWaitQueue{},
+	}
+	node.peers[1] = peer
+
 	router := NewRouter(node)
 
 	testErr := errors.New("storage error")
@@ -172,8 +191,8 @@ func TestRouterCallbackError(t *testing.T) {
 		cb: cb,
 	}
 
-	router.registerCallback(cmd)
-	router.triggerCallback(11, 1, testErr)
+	router.registerCallback(cmd, 1)
+	router.triggerCallbackForRegion(1, 11, 1, testErr)
 
 	select {
 	case <-cb.Done:
@@ -199,8 +218,17 @@ func TestRouterUnregisterCallback(t *testing.T) {
 		cfg: &Config{
 			NodeID: 1,
 		},
-		appliedIndex: 5,
+		peers: make(map[uint64]*Peer),
 	}
+
+	// Create a mock peer with appliedIndex
+	peer := &Peer{
+		region:        nil, // not used in this test
+		appliedIndex:  5,
+		readWaitQueue: &ReadWaitQueue{},
+	}
+	node.peers[1] = peer
+
 	router := NewRouter(node)
 
 	cb := &Callback{Done: make(chan struct{})}
@@ -213,11 +241,11 @@ func TestRouterUnregisterCallback(t *testing.T) {
 		cb: cb,
 	}
 
-	router.registerCallback(cmd)
-	router.unregisterCallback(cmd)
+	router.registerCallback(cmd, 1)
+	router.unregisterCallback(cmd, 1)
 
 	// Trigger callback - should not call Finish since it was unregistered
-	router.triggerCallback(6, 1, nil)
+	router.triggerCallbackForRegion(1, 6, 1, nil)
 
 	select {
 	case <-cb.Done:
@@ -227,31 +255,50 @@ func TestRouterUnregisterCallback(t *testing.T) {
 	}
 }
 
-func TestReadIndexBatcherFailRequests(t *testing.T) {
-	node := &KVNode{
+func TestPeerWaitForReadIndex(t *testing.T) {
+	peer := &Peer{
+		region:        nil,
+		appliedIndex:  10,
 		readWaitQueue: &ReadWaitQueue{},
 	}
-	batcher := NewReadIndexBatcher(node)
 
-	requests := []*ReadRequest{
-		{cf: "cf1", key: []byte("k1"), done: make(chan struct{}), addedAt: time.Now()},
-		{cf: "cf2", key: []byte("k2"), done: make(chan struct{}), addedAt: time.Now()},
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Request to wait for readIndex=15 (higher than current appliedIndex=10)
+	err := peer.waitForReadIndex(ctx, 15)
+	if err == nil {
+		t.Fatal("should timeout since appliedIndex never reaches 15")
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestPeerWaitForReadIndexImmediate(t *testing.T) {
+	peer := &Peer{
+		region:        nil,
+		appliedIndex:  10,
+		readWaitQueue: &ReadWaitQueue{},
 	}
 
-	// Simulate ReadIndex failure with readIndex=0
-	batcher.failRequests(requests, 0)
+	ctx := context.Background()
 
-	for _, req := range requests {
-		select {
-		case <-req.done:
-			// Expected
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("request should be marked as failed")
-		}
+	// Start a goroutine to advance appliedIndex after a short delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		peer.appliedIndex = 15
+		peer.notifyReadWaitQueue()
+	}()
 
-		if req.readIndex != 0 {
-			t.Fatalf("expected readIndex 0, got %d", req.readIndex)
-		}
+	// Request to wait for readIndex=15
+	err := peer.waitForReadIndex(ctx, 15)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if peer.appliedIndex != 15 {
+		t.Fatalf("expected appliedIndex 15, got %d", peer.appliedIndex)
 	}
 }
 
