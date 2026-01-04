@@ -3,7 +3,6 @@ package raft
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"sort"
@@ -75,7 +74,7 @@ func diffu(a, b string) string {
 }
 
 func mustTemp(pre, body string) string {
-	f, err := ioutil.TempFile("", pre)
+	f, err := os.CreateTemp("", pre)
 	if err != nil {
 		panic(err)
 	}

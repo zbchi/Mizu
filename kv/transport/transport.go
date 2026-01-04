@@ -82,9 +82,7 @@ func (t *Transport) Start() error {
 	raftpb.RegisterRaftServer(t.server, t)
 
 	go func() {
-		if err := t.server.Serve(listener); err != nil {
-			// 服务器关闭时会返回错误，这里可以忽略
-		}
+		_ = t.server.Serve(listener)
 	}()
 
 	return nil

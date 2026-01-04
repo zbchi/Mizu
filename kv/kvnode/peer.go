@@ -132,7 +132,7 @@ func (p *Peer) ProcessReady(rd raft.Ready) error {
 // sendMessage sends a raft message with region ID
 func (p *Peer) sendMessage(msg *raftpb.Message) {
 	msg.RegionId = p.region.ID
-	p.node.router.Send(*msg)
+	p.node.router.Send(msg)
 }
 
 // applyEntries applies committed entries to state machine

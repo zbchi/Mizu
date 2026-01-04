@@ -39,12 +39,12 @@ func NewRouter(node *KVNode) *Router {
 }
 
 // Send sends a Raft message through transport
-func (r *Router) Send(msg raftpb.Message) error {
+func (r *Router) Send(msg *raftpb.Message) error {
 	if r.transport == nil {
 		slog.Warn("No transport configured, dropping message", "to", msg.To)
 		return nil
 	}
-	return r.transport.Send(&msg)
+	return r.transport.Send(msg)
 }
 
 // registerCallback stores a callback waiting for entry to be committed and applied
@@ -120,7 +120,7 @@ func (r *Router) receiveLoop() {
 	recvCh := r.transport.Receive()
 	for msg := range recvCh {
 		select {
-		case r.node.raftCh <- *msg:
+		case r.node.raftCh <- msg:
 		default:
 			slog.Warn("Raft channel full, dropping message")
 		}

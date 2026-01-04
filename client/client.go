@@ -8,10 +8,11 @@ import (
 
 	"github.com/zbchi/linkv/proto/raftkvpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
-	conn, err := grpc.Dial("127.0.0.1:2008", grpc.WithInsecure())
+	conn, err := grpc.NewClient("127.0.0.1:2008", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		slog.Error("dial error", "error", err)
 		os.Exit(1)

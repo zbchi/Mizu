@@ -36,7 +36,7 @@ type KVNode struct {
 	regionMap *region.RegionMap
 
 	// message channels
-	raftCh  chan raftpb.Message
+	raftCh  chan *raftpb.Message
 	cmdCh   chan *RaftCmd
 	tickCh  chan struct{}
 	closeCh chan struct{}
@@ -49,7 +49,7 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 	kn := &KVNode{
 		cfg:       cfg,
 		storage:   store,
-		raftCh:    make(chan raftpb.Message, 1024),
+		raftCh:    make(chan *raftpb.Message, 1024),
 		cmdCh:     make(chan *RaftCmd, 128),
 		tickCh:    make(chan struct{}, 1),
 		closeCh:   make(chan struct{}),
@@ -172,7 +172,7 @@ func (kn *KVNode) runRaftLoop() {
 			// Route message to peer by regionID
 			peer := kn.getPeer(msg.RegionId)
 			if peer != nil {
-				peer.Step(ctx, &msg)
+				peer.Step(ctx, msg)
 			}
 
 		case cmd := <-kn.cmdCh:
@@ -229,7 +229,7 @@ func (kn *KVNode) handleReady(peer *Peer, rd raft.Ready) error {
 	// Send messages
 	for _, msg := range rd.Messages {
 		msg.RegionId = peer.RegionID()
-		kn.router.Send(*msg)
+		kn.router.Send(msg)
 	}
 
 	// Apply committed entries
