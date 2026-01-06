@@ -102,7 +102,7 @@ func notifiedBefore(ch chan struct{}, timeout time.Duration) bool {
 	}
 }
 
-func TestRouterCallbacks(t *testing.T) {
+func TestCallbackManager(t *testing.T) {
 	// Create a minimal mock KVNode with peers
 	node := &KVNode{
 		cfg: &Config{
@@ -119,7 +119,7 @@ func TestRouterCallbacks(t *testing.T) {
 	}
 	node.peers[1] = peer
 
-	router := NewRouter(node)
+	callbackMgr := NewCallbackManager(node)
 
 	cb := &Callback{Done: make(chan struct{})}
 	cmd := &RaftCmd{
@@ -132,13 +132,13 @@ func TestRouterCallbacks(t *testing.T) {
 	}
 
 	// Register callback for region 1
-	router.registerCallback(cmd, 1)
+	callbackMgr.Register(cmd, 1)
 	if cmd.index != 6 {
 		t.Fatalf("expected index 6, got %d", cmd.index)
 	}
 
 	// Trigger callback with success
-	router.triggerCallbackForRegion(1, 6, 1, nil)
+	callbackMgr.TriggerForRegion(1, 6, 1, nil)
 
 	select {
 	case <-cb.Done:
@@ -159,10 +159,10 @@ func TestRouterCallbacks(t *testing.T) {
 	}
 
 	// Trigger callback with error - no callback registered for index 7, so nothing happens
-	router.triggerCallbackForRegion(1, 7, 1, errors.New("test error"))
+	callbackMgr.TriggerForRegion(1, 7, 1, errors.New("test error"))
 }
 
-func TestRouterCallbackError(t *testing.T) {
+func TestCallbackManagerError(t *testing.T) {
 	node := &KVNode{
 		cfg: &Config{
 			NodeID: 1,
@@ -178,7 +178,7 @@ func TestRouterCallbackError(t *testing.T) {
 	}
 	node.peers[1] = peer
 
-	router := NewRouter(node)
+	callbackMgr := NewCallbackManager(node)
 
 	testErr := errors.New("storage error")
 	cb := &Callback{Done: make(chan struct{})}
@@ -191,8 +191,8 @@ func TestRouterCallbackError(t *testing.T) {
 		cb: cb,
 	}
 
-	router.registerCallback(cmd, 1)
-	router.triggerCallbackForRegion(1, 11, 1, testErr)
+	callbackMgr.Register(cmd, 1)
+	callbackMgr.TriggerForRegion(1, 11, 1, testErr)
 
 	select {
 	case <-cb.Done:
@@ -213,7 +213,7 @@ func TestRouterCallbackError(t *testing.T) {
 	}
 }
 
-func TestRouterUnregisterCallback(t *testing.T) {
+func TestCallbackManagerUnregister(t *testing.T) {
 	node := &KVNode{
 		cfg: &Config{
 			NodeID: 1,
@@ -229,7 +229,7 @@ func TestRouterUnregisterCallback(t *testing.T) {
 	}
 	node.peers[1] = peer
 
-	router := NewRouter(node)
+	callbackMgr := NewCallbackManager(node)
 
 	cb := &Callback{Done: make(chan struct{})}
 	cmd := &RaftCmd{
@@ -241,11 +241,11 @@ func TestRouterUnregisterCallback(t *testing.T) {
 		cb: cb,
 	}
 
-	router.registerCallback(cmd, 1)
-	router.unregisterCallback(cmd, 1)
+	callbackMgr.Register(cmd, 1)
+	callbackMgr.Unregister(cmd, 1)
 
 	// Trigger callback - should not call Finish since it was unregistered
-	router.triggerCallbackForRegion(1, 6, 1, nil)
+	callbackMgr.TriggerForRegion(1, 6, 1, nil)
 
 	select {
 	case <-cb.Done:

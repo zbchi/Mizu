@@ -74,7 +74,7 @@ func main() {
 	}
 	defer trans.Close()
 
-	node.Router().SetTransport(trans)
+	node.SetTransport(trans)
 
 	if err := node.Start(); err != nil {
 		slog.Error("Failed to start KVNode", "error", err)

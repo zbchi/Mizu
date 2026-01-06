@@ -132,7 +132,9 @@ func (p *Peer) ProcessReady(rd raft.Ready) error {
 // sendMessage sends a raft message with region ID
 func (p *Peer) sendMessage(msg *raftpb.Message) {
 	msg.RegionId = p.region.ID
-	p.node.router.Send(msg)
+	if p.node.transport != nil {
+		p.node.transport.Send(msg)
+	}
 }
 
 // applyEntries applies committed entries to state machine
@@ -155,16 +157,16 @@ func (p *Peer) applyEntry(entry *raftpb.Entry) {
 func (p *Peer) processCommittedEntry(entry *raftpb.Entry) {
 	var req raftkvpb.RaftCmdRequest
 	if err := proto.Unmarshal(entry.Data, &req); err != nil {
-		p.node.router.triggerCallbackForRegion(p.region.ID, entry.Index, entry.Term, err)
+		p.node.callbackMgr.TriggerForRegion(p.region.ID, entry.Index, entry.Term, err)
 		return
 	}
 
 	if err := p.applyCommand(&req); err != nil {
-		p.node.router.triggerCallbackForRegion(p.region.ID, entry.Index, entry.Term, err)
+		p.node.callbackMgr.TriggerForRegion(p.region.ID, entry.Index, entry.Term, err)
 		return
 	}
 
-	p.node.router.triggerCallbackForRegion(p.region.ID, entry.Index, entry.Term, nil)
+	p.node.callbackMgr.TriggerForRegion(p.region.ID, entry.Index, entry.Term, nil)
 }
 
 // applyCommand applies a command to storage

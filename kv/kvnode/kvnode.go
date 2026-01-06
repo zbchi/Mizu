@@ -29,11 +29,12 @@ type Config struct {
 
 // KVNode represents the Multi-Raft KV store node
 type KVNode struct {
-	cfg       *Config
-	storage   storage.Storage
-	router    *Router
-	peers     map[uint64]*Peer // regionID -> Peer
-	regionMap *region.RegionMap
+	cfg            *Config
+	storage        storage.Storage
+	callbackMgr    *CallbackManager
+	peers          map[uint64]*Peer // regionID -> Peer
+	regionMap      *region.RegionMap
+	transport      Transport
 
 	// message channels
 	raftCh  chan *raftpb.Message
@@ -57,8 +58,8 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 		regionMap: region.NewRegionMap(),
 	}
 
-	// Create router
-	kn.router = NewRouter(kn)
+	// Create callback manager
+	kn.callbackMgr = NewCallbackManager(kn)
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
@@ -229,7 +230,9 @@ func (kn *KVNode) handleReady(peer *Peer, rd raft.Ready) error {
 	// Send messages
 	for _, msg := range rd.Messages {
 		msg.RegionId = peer.RegionID()
-		kn.router.Send(msg)
+		if kn.transport != nil {
+			kn.transport.Send(msg)
+		}
 	}
 
 	// Apply committed entries
@@ -259,11 +262,11 @@ func (kn *KVNode) proposeCommand(cmd *RaftCmd) {
 	}
 
 	// Register callback BEFORE proposing
-	kn.router.registerCallback(cmd, peer.RegionID())
+	kn.callbackMgr.Register(cmd, peer.RegionID())
 
 	// Propose to Raft
 	if err := peer.Propose(ctx, data); err != nil {
-		kn.router.unregisterCallback(cmd, peer.RegionID())
+		kn.callbackMgr.Unregister(cmd, peer.RegionID())
 		cmd.cb.Finish(nil, err)
 		return
 	}
@@ -287,16 +290,16 @@ func (kn *KVNode) applyPeerEntry(peer *Peer, entry *raftpb.Entry) {
 
 	var req raftkvpb.RaftCmdRequest
 	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
-		kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+		kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
 	if err := kn.applyCommand(&req); err != nil {
-		kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+		kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	kn.router.triggerCallbackForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
+	kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
 }
 
 // applyCommand applies a single command to storage
@@ -349,9 +352,29 @@ func (kn *KVNode) NodeID() uint64 {
 	return kn.cfg.NodeID
 }
 
-// Router returns the router for setting transport
-func (kn *KVNode) Router() *Router {
-	return kn.router
+// SetTransport sets the transport for network communication
+func (kn *KVNode) SetTransport(t Transport) {
+	kn.transport = t
+
+	// Start receiving messages from transport
+	go kn.receiveLoop()
+}
+
+// receiveLoop receives messages from transport and forwards to raftCh
+func (kn *KVNode) receiveLoop() {
+	recvCh := kn.transport.Receive()
+	for msg := range recvCh {
+		select {
+		case kn.raftCh <- msg:
+		default:
+			// Channel full, drop message
+		}
+	}
+}
+
+// CallbackMgr returns the callback manager
+func (kn *KVNode) CallbackMgr() *CallbackManager {
+	return kn.callbackMgr
 }
 
 // Get performs a linearizable read using ReadIndex
