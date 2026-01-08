@@ -6,8 +6,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zbchi/linkv/kv/region"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 )
+
+// newTestRegion creates a test region with given ID
+func newTestRegion(id uint64) *region.Region {
+	return &region.Region{
+		ID:  id,
+		StartKey: []byte{},
+		EndKey:   []byte{},
+	}
+}
 
 func TestReadWaitQueue(t *testing.T) {
 	queue := &ReadWaitQueue{}
@@ -103,21 +113,22 @@ func notifiedBefore(ch chan struct{}, timeout time.Duration) bool {
 }
 
 func TestCallbackManager(t *testing.T) {
-	// Create a minimal mock KVNode with peers
+	// Create a minimal mock KVNode
 	node := &KVNode{
 		cfg: &Config{
 			NodeID: 1,
 		},
-		peers: make(map[uint64]*Peer),
+		peerRouter: NewPeerRouter(),
 	}
 
 	// Create a mock peer with appliedIndex
 	peer := &Peer{
-		region:        nil, // not used in this test
-		appliedIndex:  5,
+		region:        newTestRegion(1),
+		appliedIndex: 5,
 		readWaitQueue: &ReadWaitQueue{},
 	}
-	node.peers[1] = peer
+	// Register peer to router
+	node.peerRouter.Register(peer)
 
 	callbackMgr := NewCallbackManager(node)
 
@@ -167,16 +178,15 @@ func TestCallbackManagerError(t *testing.T) {
 		cfg: &Config{
 			NodeID: 1,
 		},
-		peers: make(map[uint64]*Peer),
+		peerRouter: NewPeerRouter(),
 	}
 
-	// Create a mock peer with appliedIndex
 	peer := &Peer{
-		region:        nil, // not used in this test
-		appliedIndex:  10,
+		region:        newTestRegion(1),
+		appliedIndex: 10,
 		readWaitQueue: &ReadWaitQueue{},
 	}
-	node.peers[1] = peer
+	node.peerRouter.Register(peer)
 
 	callbackMgr := NewCallbackManager(node)
 
@@ -218,16 +228,15 @@ func TestCallbackManagerUnregister(t *testing.T) {
 		cfg: &Config{
 			NodeID: 1,
 		},
-		peers: make(map[uint64]*Peer),
+		peerRouter: NewPeerRouter(),
 	}
 
-	// Create a mock peer with appliedIndex
 	peer := &Peer{
-		region:        nil, // not used in this test
-		appliedIndex:  5,
+		region:        newTestRegion(1),
+		appliedIndex: 5,
 		readWaitQueue: &ReadWaitQueue{},
 	}
-	node.peers[1] = peer
+	node.peerRouter.Register(peer)
 
 	callbackMgr := NewCallbackManager(node)
 
@@ -257,8 +266,8 @@ func TestCallbackManagerUnregister(t *testing.T) {
 
 func TestPeerWaitForReadIndex(t *testing.T) {
 	peer := &Peer{
-		region:        nil,
-		appliedIndex:  10,
+		region:        newTestRegion(1),
+		appliedIndex: 10,
 		readWaitQueue: &ReadWaitQueue{},
 	}
 
@@ -277,8 +286,8 @@ func TestPeerWaitForReadIndex(t *testing.T) {
 
 func TestPeerWaitForReadIndexImmediate(t *testing.T) {
 	peer := &Peer{
-		region:        nil,
-		appliedIndex:  10,
+		region:        newTestRegion(1),
+		appliedIndex: 10,
 		readWaitQueue: &ReadWaitQueue{},
 	}
 
@@ -349,7 +358,7 @@ func TestCallbackFinishWithError(t *testing.T) {
 		// Expected - Wait is still blocking
 	}
 
-	// Finish the callback with an error
+	// Finish callback with an error
 	cb.Finish(nil, context.Canceled)
 
 	select {

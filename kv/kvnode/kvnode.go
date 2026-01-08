@@ -6,14 +6,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zbchi/linkv/kv/kvnode/message"
 	"github.com/zbchi/linkv/kv/region"
 	"github.com/zbchi/linkv/kv/storage"
 	"github.com/zbchi/linkv/proto"
 	"github.com/zbchi/linkv/proto/linkvpb"
 	"github.com/zbchi/linkv/proto/raftkvpb"
-	"github.com/zbchi/linkv/proto/raftpb"
-	"github.com/zbchi/linkv/raft"
-	protov2 "google.golang.org/protobuf/proto"
 )
 
 // Config represents the KVNode configuration
@@ -29,18 +27,15 @@ type Config struct {
 
 // KVNode represents the Multi-Raft KV store node
 type KVNode struct {
-	cfg            *Config
-	storage        storage.Storage
-	callbackMgr    *CallbackManager
-	peers          map[uint64]*Peer // regionID -> Peer
-	regionMap      *region.RegionMap
-	transport      Transport
-
-	// message channels
-	raftCh  chan *raftpb.Message
-	cmdCh   chan *RaftCmd
-	tickCh  chan struct{}
-	closeCh chan struct{}
+	cfg         *Config
+	storage     storage.Storage
+	callbackMgr *CallbackManager
+	peerRouter  *PeerRouter
+	raftWorker  *raftWorker
+	regionMap   *region.RegionMap
+	transport   Transport
+	closeCh     chan struct{}
+	closeOnce   sync.Once
 
 	sync.RWMutex
 }
@@ -48,18 +43,17 @@ type KVNode struct {
 // NewKVNode creates a new KVNode
 func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 	kn := &KVNode{
-		cfg:       cfg,
-		storage:   store,
-		raftCh:    make(chan *raftpb.Message, 1024),
-		cmdCh:     make(chan *RaftCmd, 128),
-		tickCh:    make(chan struct{}, 1),
-		closeCh:   make(chan struct{}),
-		peers:     make(map[uint64]*Peer),
-		regionMap: region.NewRegionMap(),
+		cfg:         cfg,
+		storage:     store,
+		regionMap:   region.NewRegionMap(),
+		closeCh:     make(chan struct{}),
 	}
 
 	// Create callback manager
 	kn.callbackMgr = NewCallbackManager(kn)
+
+	// Create peer router
+	kn.peerRouter = NewPeerRouter()
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
@@ -89,7 +83,8 @@ func (kn *KVNode) initPeers() error {
 	raftStorage := kn.storage.RaftStorage()
 	peer := NewPeer(defaultRegion, kn.cfg.NodeID, kn, raftStorage)
 
-	kn.peers[defaultRegion.ID] = peer
+	// Register peer to router
+	kn.peerRouter.Register(peer)
 
 	return nil
 }
@@ -103,8 +98,17 @@ func (kn *KVNode) Start() error {
 		return err
 	}
 
-	// Start worker goroutines
-	go kn.runRaftLoop()
+	// Create worker context
+	ctx := &WorkerContext{
+		node:      kn,
+		transport: kn.transport,
+	}
+
+	// Create and start raft worker
+	kn.raftWorker = newRaftWorker(kn.peerRouter, ctx)
+	kn.raftWorker.start(kn.closeCh)
+
+	// Start ticker
 	go kn.runTicker()
 
 	return nil
@@ -114,14 +118,17 @@ func (kn *KVNode) Start() error {
 func (kn *KVNode) Stop() error {
 	slog.Info("Stopping KVNode", "node", kn.cfg.NodeID)
 
-	close(kn.closeCh)
+	kn.closeOnce.Do(func() {
+		close(kn.closeCh)
+	})
 
-	// Stop all peers
-	kn.RLock()
-	for _, peer := range kn.peers {
-		peer.Stop()
+	// Stop raft worker
+	if kn.raftWorker != nil {
+		kn.raftWorker.stop()
 	}
-	kn.RUnlock()
+
+	// Close all peers
+	kn.peerRouter.CloseAll()
 
 	// Stop storage
 	if kn.storage != nil {
@@ -133,9 +140,11 @@ func (kn *KVNode) Stop() error {
 
 // getPeer returns peer by regionID
 func (kn *KVNode) getPeer(regionID uint64) *Peer {
-	kn.RLock()
-	defer kn.RUnlock()
-	return kn.peers[regionID]
+	ps := kn.peerRouter.Get(regionID)
+	if ps == nil {
+		return nil
+	}
+	return ps.peer
 }
 
 // runTicker runs the ticker for all peers
@@ -143,163 +152,78 @@ func (kn *KVNode) runTicker() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Send tick to region 1 (default region)
 	for {
 		select {
 		case <-ticker.C:
-			select {
-			case kn.tickCh <- struct{}{}:
-			default:
+			tickMsg := message.Msg{
+				Type:     message.MsgTypeTick,
+				RegionID: 1,
+				Data:     nil,
 			}
+			kn.peerRouter.Send(1, tickMsg)
 		case <-kn.closeCh:
 			return
 		}
 	}
 }
 
-// runRaftLoop runs the main Raft loop for all peers (TiKV style)
-func (kn *KVNode) runRaftLoop() {
-	ctx := context.Background()
-	for {
-		select {
-		case <-kn.tickCh:
-			// Tick all peers
-			kn.RLock()
-			for _, peer := range kn.peers {
-				peer.Tick()
-			}
-			kn.RUnlock()
+// Put writes a command through Raft log
+func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+	cb := &Callback{Done: make(chan struct{})}
+	cmd := &RaftCmd{
+		Request: req,
+		cb:      cb,
+	}
 
-		case msg := <-kn.raftCh:
-			// Route message to peer by regionID
-			peer := kn.getPeer(msg.RegionId)
-			if peer != nil {
-				peer.Step(ctx, msg)
-			}
+	// Send command to region 1 (TODO: route by key)
+	cmdMsg := message.Msg{
+		Type:     message.MsgTypeRaftCmd,
+		RegionID: 1,
+		Data:     cmd,
+	}
 
-		case cmd := <-kn.cmdCh:
-			kn.proposeCommand(cmd)
+	if err := kn.peerRouter.Send(1, cmdMsg); err != nil {
+		return nil, err
+	}
 
-		case <-kn.closeCh:
-			return
+	return cb.Wait()
+}
 
-		default:
-			// No pending events, check and process ready for all peers
-			kn.RLock()
-			for _, peer := range kn.peers {
-				if !peer.HasReady() {
-					continue
-				}
-				rd := <-peer.Ready()
-				if err := kn.handleReady(peer, rd); err != nil {
-					slog.Error("Failed to handle ready", "region", peer.RegionID(), "error", err)
-					continue
-				}
-				peer.Advance()
-			}
-			kn.RUnlock()
+// NodeID returns the current node ID
+func (kn *KVNode) NodeID() uint64 {
+	return kn.cfg.NodeID
+}
+
+// SetTransport sets the transport for network communication
+func (kn *KVNode) SetTransport(t Transport) {
+	kn.transport = t
+
+	// Update worker context
+	if kn.raftWorker != nil {
+		kn.raftWorker.ctx.transport = t
+	}
+
+	// Start receiving messages from transport
+	go kn.receiveLoop()
+}
+
+// receiveLoop receives messages from transport and forwards to peerRouter
+func (kn *KVNode) receiveLoop() {
+	recvCh := kn.transport.Receive()
+	for msg := range recvCh {
+		raftMsg := message.Msg{
+			Type:     message.MsgTypeRaftMessage,
+			RegionID: msg.RegionId,
+			Data:     msg,
 		}
+		kn.peerRouter.Send(msg.RegionId, raftMsg)
 	}
 }
 
-// handleReady processes raft ready state for a peer
-func (kn *KVNode) handleReady(peer *Peer, rd raft.Ready) error {
-	// Save HardState
-	if rd.HardState != nil && !rd.HardState.IsEmpty() {
-		if err := peer.raftStorage.SaveHardState(*rd.HardState); err != nil {
-			return err
-		}
-	}
-
-	// Save Entries
-	if len(rd.Entries) > 0 {
-		if err := peer.raftStorage.SaveEntries(rd.Entries); err != nil {
-			return err
-		}
-	}
-
-	// Save/Apply Snapshot
-	if rd.Snapshot != nil {
-		if err := peer.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
-			return err
-		}
-		if err := peer.raftStorage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
-			return err
-		}
-	}
-
-	// Send messages
-	for _, msg := range rd.Messages {
-		msg.RegionId = peer.RegionID()
-		if kn.transport != nil {
-			kn.transport.Send(msg)
-		}
-	}
-
-	// Apply committed entries
-	if len(rd.CommittedEntries) > 0 {
-		kn.applyPeerEntries(peer, rd.CommittedEntries)
-	}
-
-	return nil
-}
-
-// proposeCommand proposes a command to the correct region peer
-func (kn *KVNode) proposeCommand(cmd *RaftCmd) {
-	ctx := context.Background()
-
-	// Route to region peer (currently all keys go to region 1)
-	peer := kn.getPeer(1) // TODO: route by key
-	if peer == nil {
-		cmd.cb.Finish(nil, ErrNotLeader)
-		return
-	}
-
-	// Marshal the request
-	data, err := protov2.Marshal(cmd.Request)
-	if err != nil {
-		cmd.cb.Finish(nil, err)
-		return
-	}
-
-	// Register callback BEFORE proposing
-	kn.callbackMgr.Register(cmd, peer.RegionID())
-
-	// Propose to Raft
-	if err := peer.Propose(ctx, data); err != nil {
-		kn.callbackMgr.Unregister(cmd, peer.RegionID())
-		cmd.cb.Finish(nil, err)
-		return
-	}
-}
-
-// applyPeerEntries applies committed entries for a specific peer
-func (kn *KVNode) applyPeerEntries(peer *Peer, entries []*raftpb.Entry) {
-	for _, entry := range entries {
-		kn.applyPeerEntry(peer, entry)
-		peer.appliedIndex = entry.Index
-	}
-	// Notify waiting read requests for this peer
-	peer.notifyReadWaitQueue()
-}
-
-// applyPeerEntry applies a single entry for a specific peer
-func (kn *KVNode) applyPeerEntry(peer *Peer, entry *raftpb.Entry) {
-	if len(entry.Data) == 0 {
-		return
-	}
-
-	var req raftkvpb.RaftCmdRequest
-	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
-		kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
-		return
-	}
-
-	if err := kn.applyCommand(&req); err != nil {
-		kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
-		return
-	}
-
-	kn.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
+// CallbackMgr returns the callback manager
+func (kn *KVNode) CallbackMgr() *CallbackManager {
+	return kn.callbackMgr
 }
 
 // applyCommand applies a single command to storage
@@ -328,53 +252,6 @@ func (kn *KVNode) applyCommand(req *raftkvpb.RaftCmdRequest) error {
 		return kn.storage.Write(ctx, mods)
 	}
 	return nil
-}
-
-// Put writes a command through Raft log
-func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	cb := &Callback{Done: make(chan struct{})}
-	cmd := &RaftCmd{
-		Request: req,
-		cb:      cb,
-	}
-
-	select {
-	case kn.cmdCh <- cmd:
-	case <-kn.closeCh:
-		return nil, context.Canceled
-	}
-
-	return cb.Wait()
-}
-
-// NodeID returns the current node ID
-func (kn *KVNode) NodeID() uint64 {
-	return kn.cfg.NodeID
-}
-
-// SetTransport sets the transport for network communication
-func (kn *KVNode) SetTransport(t Transport) {
-	kn.transport = t
-
-	// Start receiving messages from transport
-	go kn.receiveLoop()
-}
-
-// receiveLoop receives messages from transport and forwards to raftCh
-func (kn *KVNode) receiveLoop() {
-	recvCh := kn.transport.Receive()
-	for msg := range recvCh {
-		select {
-		case kn.raftCh <- msg:
-		default:
-			// Channel full, drop message
-		}
-	}
-}
-
-// CallbackMgr returns the callback manager
-func (kn *KVNode) CallbackMgr() *CallbackManager {
-	return kn.callbackMgr
 }
 
 // Get performs a linearizable read using ReadIndex
