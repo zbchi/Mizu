@@ -1,32 +1,37 @@
-package kvnode
+package raftstore
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/kv/kvnode/message"
 	"github.com/zbchi/linkv/proto/raftkvpb"
 	"github.com/zbchi/linkv/proto/raftpb"
 	"github.com/zbchi/linkv/raft"
 	protov2 "google.golang.org/protobuf/proto"
 )
 
+var (
+	// ErrNotLeader is returned when a command is proposed by a follower
+	ErrNotLeader = errors.New("not leader")
+)
+
 // raftWorker is responsible for processing raft messages in batches
 type raftWorker struct {
 	router    *PeerRouter
-	node      *KVNode
+	store     *Store
 	transport Transport
-	msgCh     <-chan message.Msg
+	msgCh     <-chan Msg
 	closeCh   chan struct{}
 	stopCh    chan struct{}
 	wg        *sync.WaitGroup
 }
 
 // newRaftWorker creates a new raftWorker
-func newRaftWorker(router *PeerRouter, node *KVNode) *raftWorker {
+func newRaftWorker(router *PeerRouter, store *Store) *raftWorker {
 	return &raftWorker{
 		router:  router,
-		node:    node,
+		store:   store,
 		msgCh:   router.MsgChan(),
 		closeCh: make(chan struct{}),
 		stopCh:  make(chan struct{}),
@@ -51,7 +56,7 @@ func (rw *raftWorker) stop() {
 
 // run runs the raft worker loop
 func (rw *raftWorker) run(closeCh <-chan struct{}) {
-	var msgs []message.Msg
+	var msgs []Msg
 	for {
 		msgs = msgs[:0]
 
@@ -72,7 +77,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}) {
 		}
 
 		// Group messages by RegionID
-		peerMap := make(map[uint64][]message.Msg)
+		peerMap := make(map[uint64][]Msg)
 		for _, msg := range msgs {
 			peerMap[msg.RegionID] = append(peerMap[msg.RegionID], msg)
 		}
@@ -96,9 +101,9 @@ func (rw *raftWorker) run(closeCh <-chan struct{}) {
 }
 
 // handleMsg handles a single message for a peer
-func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
+func (rw *raftWorker) handleMsg(peer *Peer, msg Msg) {
 	switch msg.Type {
-	case message.MsgTypeRaftMessage:
+	case MsgTypeRaftMessage:
 		raftMsg, ok := msg.Data.(*raftpb.Message)
 		if !ok {
 			slog.Warn("Invalid raft message type", "region", peer.RegionID())
@@ -108,7 +113,7 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
 			slog.Warn("Failed to step raft", "region", peer.RegionID(), "error", err)
 		}
 
-	case message.MsgTypeRaftCmd:
+	case MsgTypeRaftCmd:
 		cmd, ok := msg.Data.(*RaftCmd)
 		if !ok {
 			slog.Warn("Invalid raft cmd type", "region", peer.RegionID())
@@ -116,7 +121,7 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
 		}
 		rw.handleRaftCmd(peer, cmd)
 
-	case message.MsgTypeTick:
+	case MsgTypeTick:
 		peer.Tick()
 
 	default:
@@ -126,21 +131,28 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
 
 // handleRaftCmd handles a raft command (client proposal)
 func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
+	slog.Info("handleRaftCmd: processing command", "region", peer.RegionID())
+
 	// Marshal the request
 	data, err := protov2.Marshal(cmd.Request)
 	if err != nil {
-		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, err)
+		slog.Error("handleRaftCmd: failed to marshal request", "error", err)
+		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), 0, 0, err)
 		return
 	}
 
 	// Register callback BEFORE proposing
-	rw.node.callbackMgr.Register(cmd, peer.RegionID())
+	rw.store.RegisterCallback(cmd, peer.RegionID())
 
 	// Propose to Raft
 	if !peer.Propose(data) {
-		rw.node.callbackMgr.Unregister(cmd, peer.RegionID())
-		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, ErrNotLeader)
+		slog.Error("handleRaftCmd: propose failed", "region", peer.RegionID())
+		rw.store.UnregisterCallback(cmd, peer.RegionID())
+		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), 0, 0, ErrNotLeader)
+		return
 	}
+
+	slog.Info("handleRaftCmd: propose succeeded", "region", peer.RegionID())
 }
 
 // handleReady processes the ready state for a peer
@@ -149,6 +161,9 @@ func (rw *raftWorker) handleReady(peer *Peer) {
 	if rd.IsEmpty() {
 		return
 	}
+
+	slog.Debug("handleReady: processing ready state", "region", peer.RegionID(),
+		"entries", len(rd.Entries), "committed", len(rd.CommittedEntries), "messages", len(rd.Messages))
 
 	// Process ready
 	if err := rw.processReady(peer, rd); err != nil {
@@ -195,6 +210,7 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 
 	// Apply committed entries
 	if len(rd.CommittedEntries) > 0 {
+		slog.Info("processReady: applying committed entries", "region", peer.RegionID(), "count", len(rd.CommittedEntries))
 		rw.applyEntries(peer, rd.CommittedEntries)
 	}
 
@@ -217,16 +233,28 @@ func (rw *raftWorker) applyEntry(peer *Peer, entry *raftpb.Entry) {
 		return
 	}
 
+	slog.Info("applyEntry: applying entry", "region", peer.RegionID(), "index", entry.Index, "term", entry.Term)
+
 	var req raftkvpb.RaftCmdRequest
 	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
-		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+		slog.Error("applyEntry: failed to unmarshal request", "error", err, "index", entry.Index)
+		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	if err := rw.node.applyCommand(&req); err != nil {
-		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+	if err := rw.store.ApplyCommand(&req); err != nil {
+		slog.Error("applyEntry: failed to apply command", "error", err, "index", entry.Index)
+		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
+	rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
+}
+
+// Transport defines the interface for sending and receiving Raft messages over network
+type Transport interface {
+	Send(msg *raftpb.Message) error
+	Start() error
+	Close() error
+	Receive() <-chan *raftpb.Message
 }

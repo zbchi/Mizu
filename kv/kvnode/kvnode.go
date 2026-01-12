@@ -4,9 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"time"
 
-	"github.com/zbchi/linkv/kv/kvnode/message"
+	"github.com/zbchi/linkv/kv/kvnode/raftstore"
 	"github.com/zbchi/linkv/kv/region"
 	"github.com/zbchi/linkv/kv/storage"
 	"github.com/zbchi/linkv/proto"
@@ -27,41 +26,34 @@ type Config struct {
 
 // KVNode represents Multi-Raft KV store node
 type KVNode struct {
-	cfg         *Config
-	storage     storage.Storage
-	callbackMgr *CallbackManager
-	peerRouter  *PeerRouter
-	raftWorker  *raftWorker
-	regionMap   *region.RegionMap
-	transport   Transport
-	closeCh     chan struct{}
-	closeOnce   sync.Once
+	cfg       *Config
+	storage   storage.Storage
+	store     *raftstore.Store
+	transport raftstore.Transport
+	closeCh   chan struct{}
+	closeOnce sync.Once
 
 	sync.RWMutex
 }
 
 // NewKVNode creates a new KVNode
-func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
+func NewKVNode(cfg *Config, storage storage.Storage) (*KVNode, error) {
 	kn := &KVNode{
-		cfg:         cfg,
-		storage:     store,
-		regionMap:   region.NewRegionMap(),
-		closeCh:     make(chan struct{}),
+		cfg:     cfg,
+		storage: storage,
+		closeCh: make(chan struct{}),
 	}
 
-	// Create callback manager
-	kn.callbackMgr = NewCallbackManager(kn)
+	// Create store
+	kn.store = raftstore.NewStore(cfg.NodeID, storage, kn.closeCh)
 
-	// Create peer router
-	kn.peerRouter = NewPeerRouter()
+	// Initialize store with callback manager and command applier
+	kn.store.Init(kn.store, kn)
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
 		return nil, err
 	}
-
-	// Create raft worker
-	kn.raftWorker = newRaftWorker(kn.peerRouter, kn)
 
 	return kn, nil
 }
@@ -77,17 +69,12 @@ func (kn *KVNode) initPeers() error {
 		Leader:   kn.cfg.Peers[0],
 	}
 
-	// Add to region map
-	if err := kn.regionMap.AddRegion(defaultRegion); err != nil {
-		return err
-	}
-
 	// Create peer for region 1
 	raftStorage := kn.storage.RaftStorage()
-	peer := NewPeer(defaultRegion, kn.cfg.NodeID, kn, raftStorage)
+	peer := raftstore.NewPeer(defaultRegion, kn.cfg.NodeID, kn.closeCh, raftStorage)
 
-	// Register peer to router
-	kn.peerRouter.Register(peer)
+	// Add peer to store
+	kn.store.AddPeer(defaultRegion, peer)
 
 	return nil
 }
@@ -101,11 +88,8 @@ func (kn *KVNode) Start() error {
 		return err
 	}
 
-	// Start raft worker
-	kn.raftWorker.start(kn.closeCh)
-
-	// Start ticker
-	go kn.runTicker()
+	// Start store (includes raft worker and ticker)
+	kn.store.Start()
 
 	return nil
 }
@@ -118,13 +102,8 @@ func (kn *KVNode) Stop() error {
 		close(kn.closeCh)
 	})
 
-	// Stop raft worker
-	if kn.raftWorker != nil {
-		kn.raftWorker.stop()
-	}
-
-	// Close all peers
-	kn.peerRouter.CloseAll()
+	// Stop store (includes raft worker and peers)
+	kn.store.Stop()
 
 	// Stop storage
 	if kn.storage != nil {
@@ -135,54 +114,27 @@ func (kn *KVNode) Stop() error {
 }
 
 // getPeer returns peer by regionID
-func (kn *KVNode) getPeer(regionID uint64) *Peer {
-	ps := kn.peerRouter.Get(regionID)
-	if ps == nil {
-		return nil
-	}
-	return ps.peer
-}
-
-// runTicker runs ticker for all peers
-func (kn *KVNode) runTicker() {
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	// Send tick to region 1 (default region)
-	for {
-		select {
-		case <-ticker.C:
-			tickMsg := message.Msg{
-				Type:     message.MsgTypeTick,
-				RegionID: 1,
-				Data:     nil,
-			}
-			kn.peerRouter.Send(1, tickMsg)
-		case <-kn.closeCh:
-			return
-		}
-	}
+func (kn *KVNode) getPeer(regionID uint64) *raftstore.Peer {
+	return kn.store.GetPeer(regionID)
 }
 
 // Put writes a command through Raft log
 func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	cb := &Callback{Done: make(chan struct{})}
-	cmd := &RaftCmd{
+	slog.Info("Put request received", "node", kn.cfg.NodeID, "key", string(req.Requests[0].Put.Key))
+
+	cb := &raftstore.Callback{Done: make(chan struct{})}
+	cmd := &raftstore.RaftCmd{
 		Request: req,
-		cb:      cb,
+		Cb:      cb,
 	}
 
 	// Send command to region 1 (TODO: route by key)
-	cmdMsg := message.Msg{
-		Type:     message.MsgTypeRaftCmd,
-		RegionID: 1,
-		Data:     cmd,
-	}
-
-	if err := kn.peerRouter.Send(1, cmdMsg); err != nil {
+	if err := kn.store.SendCmd(1, cmd); err != nil {
+		slog.Error("Failed to send cmd", "error", err)
 		return nil, err
 	}
 
+	slog.Info("Waiting for callback...")
 	return cb.Wait()
 }
 
@@ -192,38 +144,18 @@ func (kn *KVNode) NodeID() uint64 {
 }
 
 // SetTransport sets the transport for network communication
-func (kn *KVNode) SetTransport(t Transport) {
+func (kn *KVNode) SetTransport(t raftstore.Transport) {
 	kn.transport = t
-
-	// Update raft worker transport
-	if kn.raftWorker != nil {
-		kn.raftWorker.transport = t
-	}
-
-	// Start receiving messages from transport
-	go kn.receiveLoop()
-}
-
-// receiveLoop receives messages from transport and forwards to peerRouter
-func (kn *KVNode) receiveLoop() {
-	recvCh := kn.transport.Receive()
-	for msg := range recvCh {
-		raftMsg := message.Msg{
-			Type:     message.MsgTypeRaftMessage,
-			RegionID: msg.RegionId,
-			Data:     msg,
-		}
-		kn.peerRouter.Send(msg.RegionId, raftMsg)
-	}
+	kn.store.SetTransport(t)
 }
 
 // CallbackMgr returns callback manager
-func (kn *KVNode) CallbackMgr() *CallbackManager {
-	return kn.callbackMgr
+func (kn *KVNode) CallbackMgr() *raftstore.CallbackManager {
+	return kn.store.CallbackMgr()
 }
 
-// applyCommand applies a single command to storage
-func (kn *KVNode) applyCommand(req *raftkvpb.RaftCmdRequest) error {
+// ApplyCommand applies a raft command to storage (implements CommandApplier interface)
+func (kn *KVNode) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 	if len(req.Requests) == 0 {
 		return nil
 	}
@@ -257,17 +189,17 @@ func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftk
 	// Route to peer (currently only region 1)
 	peer := kn.getPeer(1)
 	if peer == nil {
-		return nil, ErrNotLeader
+		return nil, raftstore.ErrNotLeader
 	}
 
 	// Get read index directly from peer
 	readIndex := peer.ReadIndex()
 	if readIndex == 0 {
-		return nil, ErrNotLeader
+		return nil, raftstore.ErrNotLeader
 	}
 
 	// Wait for appliedIndex to reach readIndex
-	if err := peer.waitForReadIndex(readIndex); err != nil {
+	if err := peer.WaitForReadIndex(readIndex); err != nil {
 		return nil, err
 	}
 

@@ -1,18 +1,17 @@
-package kvnode
+package raftstore
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
-
-	"github.com/zbchi/linkv/kv/kvnode/message"
 )
 
 var (
 	// ErrPeerNotFound is returned when target peer is not found
-	ErrPeerNotFound = NewError(ErrCodePeerNotFound, "peer not found")
+	ErrPeerNotFound = errors.New("peer not found")
 )
 
-// PeerState contains the peer state
+// PeerState contains peer state
 type PeerState struct {
 	peer   *Peer
 	closed uint32 // atomic flag
@@ -21,7 +20,7 @@ type PeerState struct {
 // PeerRouter manages multiple peers and routes messages to them
 type PeerRouter struct {
 	peers     sync.Map // regionID -> *PeerState
-	msgSender chan message.Msg
+	msgSender chan Msg
 	closeCh   chan struct{}
 }
 
@@ -29,7 +28,7 @@ type PeerRouter struct {
 func NewPeerRouter() *PeerRouter {
 	return &PeerRouter{
 		peers:     sync.Map{},
-		msgSender: make(chan message.Msg, 4096),
+		msgSender: make(chan Msg, 4096),
 		closeCh:   make(chan struct{}),
 	}
 }
@@ -63,7 +62,7 @@ func (pr *PeerRouter) Close(regionID uint64) {
 }
 
 // Send sends a message to the peer with the given region ID
-func (pr *PeerRouter) Send(regionID uint64, msg message.Msg) error {
+func (pr *PeerRouter) Send(regionID uint64, msg Msg) error {
 	ps := pr.Get(regionID)
 	if ps == nil || atomic.LoadUint32(&ps.closed) == 1 {
 		return ErrPeerNotFound
@@ -73,7 +72,7 @@ func (pr *PeerRouter) Send(regionID uint64, msg message.Msg) error {
 }
 
 // MsgChan returns the message sender channel
-func (pr *PeerRouter) MsgChan() <-chan message.Msg {
+func (pr *PeerRouter) MsgChan() <-chan Msg {
 	return pr.msgSender
 }
 

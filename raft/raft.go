@@ -231,6 +231,11 @@ func (r *Raft) ReadIndex() uint64 {
 	return r.hardState.CommitIndex
 }
 
+// LastIndex returns the last index in the raft log
+func (r *Raft) LastIndex() uint64 {
+	return r.raftLog.LastIndex()
+}
+
 func (r *Raft) becomeFollower(term, lead uint64) {
 	r.state = StateFollower
 	r.lead = lead
