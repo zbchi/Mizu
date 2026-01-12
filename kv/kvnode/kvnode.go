@@ -29,6 +29,7 @@ type KVNode struct {
 	cfg       *Config
 	storage   storage.Storage
 	store     *raftstore.Store
+	router    *Router
 	transport raftstore.Transport
 	closeCh   chan struct{}
 	closeOnce sync.Once
@@ -41,6 +42,7 @@ func NewKVNode(cfg *Config, storage storage.Storage) (*KVNode, error) {
 	kn := &KVNode{
 		cfg:     cfg,
 		storage: storage,
+		router:  NewRouter(),
 		closeCh: make(chan struct{}),
 	}
 
@@ -68,6 +70,9 @@ func (kn *KVNode) initPeers() error {
 		Peers:    kn.cfg.Peers,
 		Leader:   kn.cfg.Peers[0],
 	}
+
+	// Add region to router
+	kn.router.AddRegion(defaultRegion)
 
 	// Create peer for region 1
 	raftStorage := kn.storage.RaftStorage()
@@ -120,7 +125,8 @@ func (kn *KVNode) getPeer(regionID uint64) *raftstore.Peer {
 
 // Put writes a command through Raft log
 func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	slog.Info("Put request received", "node", kn.cfg.NodeID, "key", string(req.Requests[0].Put.Key))
+	key := req.Requests[0].Put.Key
+	slog.Info("Put request received", "node", kn.cfg.NodeID, "key", string(key))
 
 	cb := &raftstore.Callback{Done: make(chan struct{})}
 	cmd := &raftstore.RaftCmd{
@@ -128,8 +134,15 @@ func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, 
 		Cb:      cb,
 	}
 
-	// Send command to region 1 (TODO: route by key)
-	if err := kn.store.SendCmd(1, cmd); err != nil {
+	// Route key to region
+	regionID := kn.router.Route(key)
+	if regionID == 0 {
+		slog.Error("No region found for key", "key", string(key))
+		return nil, raftstore.ErrPeerNotFound
+	}
+
+	// Send command to the target region
+	if err := kn.store.SendCmd(regionID, cmd); err != nil {
 		slog.Error("Failed to send cmd", "error", err)
 		return nil, err
 	}
@@ -186,8 +199,15 @@ func (kn *KVNode) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	getReq := req.Requests[0].Get
 
-	// Route to peer (currently only region 1)
-	peer := kn.getPeer(1)
+	// Route key to region
+	regionID := kn.router.Route(getReq.Key)
+	if regionID == 0 {
+		slog.Error("No region found for key", "key", string(getReq.Key))
+		return nil, raftstore.ErrPeerNotFound
+	}
+
+	// Route to peer
+	peer := kn.getPeer(regionID)
 	if peer == nil {
 		return nil, raftstore.ErrNotLeader
 	}
