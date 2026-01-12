@@ -13,7 +13,7 @@ import (
 // newTestRegion creates a test region with given ID
 func newTestRegion(id uint64) *region.Region {
 	return &region.Region{
-		ID:  id,
+		ID:       id,
 		StartKey: []byte{},
 		EndKey:   []byte{},
 	}
@@ -124,7 +124,7 @@ func TestCallbackManager(t *testing.T) {
 	// Create a mock peer with appliedIndex
 	peer := &Peer{
 		region:        newTestRegion(1),
-		appliedIndex: 5,
+		appliedIndex:  5,
 		readWaitQueue: &ReadWaitQueue{},
 	}
 	// Register peer to router
@@ -183,7 +183,7 @@ func TestCallbackManagerError(t *testing.T) {
 
 	peer := &Peer{
 		region:        newTestRegion(1),
-		appliedIndex: 10,
+		appliedIndex:  10,
 		readWaitQueue: &ReadWaitQueue{},
 	}
 	node.peerRouter.Register(peer)
@@ -233,7 +233,7 @@ func TestCallbackManagerUnregister(t *testing.T) {
 
 	peer := &Peer{
 		region:        newTestRegion(1),
-		appliedIndex: 5,
+		appliedIndex:  5,
 		readWaitQueue: &ReadWaitQueue{},
 	}
 	node.peerRouter.Register(peer)
@@ -265,33 +265,42 @@ func TestCallbackManagerUnregister(t *testing.T) {
 }
 
 func TestPeerWaitForReadIndex(t *testing.T) {
+	node := &KVNode{closeCh: make(chan struct{})}
 	peer := &Peer{
 		region:        newTestRegion(1),
-		appliedIndex: 10,
+		appliedIndex:  10,
 		readWaitQueue: &ReadWaitQueue{},
+		node:          node,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	// Start a goroutine to wait for readIndex=15
+	// It should block since appliedIndex never reaches 15
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- peer.waitForReadIndex(15)
+	}()
 
-	// Request to wait for readIndex=15 (higher than current appliedIndex=10)
-	err := peer.waitForReadIndex(ctx, 15)
-	if err == nil {
-		t.Fatal("should timeout since appliedIndex never reaches 15")
-	}
-	if err != context.DeadlineExceeded {
-		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	// Close closeCh after delay to unblock the wait
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(node.closeCh)
+	}()
+
+	select {
+	case <-doneCh:
+		// Expected - wait returned when closeCh closed
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("wait should return when closeCh closes")
 	}
 }
 
 func TestPeerWaitForReadIndexImmediate(t *testing.T) {
 	peer := &Peer{
 		region:        newTestRegion(1),
-		appliedIndex: 10,
+		appliedIndex:  10,
 		readWaitQueue: &ReadWaitQueue{},
+		node:          &KVNode{closeCh: make(chan struct{})},
 	}
-
-	ctx := context.Background()
 
 	// Start a goroutine to advance appliedIndex after a short delay
 	go func() {
@@ -301,7 +310,7 @@ func TestPeerWaitForReadIndexImmediate(t *testing.T) {
 	}()
 
 	// Request to wait for readIndex=15
-	err := peer.waitForReadIndex(ctx, 15)
+	err := peer.waitForReadIndex(15)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -359,7 +368,7 @@ func TestCallbackFinishWithError(t *testing.T) {
 	}
 
 	// Finish callback with an error
-	cb.Finish(nil, context.Canceled)
+	cb.Finish(&raftkvpb.RaftCmdResponse{}, context.Canceled)
 
 	select {
 	case <-doneCh:

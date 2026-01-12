@@ -20,9 +20,9 @@ type PeerState struct {
 
 // PeerRouter manages multiple peers and routes messages to them
 type PeerRouter struct {
-	peers      sync.Map // regionID -> *PeerState
-	msgSender  chan message.Msg
-	closeCh    chan struct{}
+	peers     sync.Map // regionID -> *PeerState
+	msgSender chan message.Msg
+	closeCh   chan struct{}
 }
 
 // NewPeerRouter creates a new PeerRouter

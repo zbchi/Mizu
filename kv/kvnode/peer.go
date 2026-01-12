@@ -1,7 +1,6 @@
 package kvnode
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/zbchi/linkv/kv/region"
@@ -14,7 +13,7 @@ import (
 // Peer represents a region replica on this node
 type Peer struct {
 	region       *region.Region
-	raftNode     *raft.RawNode
+	raft         *raft.Raft
 	raftStorage  raft.RaftStorage
 	appliedIndex uint64
 
@@ -29,16 +28,9 @@ func NewPeer(reg *region.Region, nodeID uint64, node *KVNode, raftStorage raft.R
 		peerIDs[i] = p.NodeID
 	}
 
-	raftCfg := raft.Config{
-		ID:    nodeID,
-		Peers: peerIDs,
-	}
-
-	raftNode := raft.NewRawNode(raftCfg)
-
 	return &Peer{
 		region:        reg,
-		raftNode:      raftNode,
+		raft:          raft.NewRaft(raft.Config{ID: nodeID, Peers: peerIDs}),
 		raftStorage:   raftStorage,
 		appliedIndex:  0,
 		node:          node,
@@ -46,52 +38,52 @@ func NewPeer(reg *region.Region, nodeID uint64, node *KVNode, raftStorage raft.R
 	}
 }
 
-// RegionID returns the region ID
+// RegionID returns region ID
 func (p *Peer) RegionID() uint64 {
 	return p.region.ID
 }
 
-// Tick advances the raft ticker
+// Tick advances raft ticker
 func (p *Peer) Tick() {
-	p.raftNode.Tick()
+	p.raft.Tick()
 }
 
 // Step processes a raft message
-func (p *Peer) Step(ctx context.Context, msg *raftpb.Message) error {
-	return p.raftNode.Step(ctx, msg)
+func (p *Peer) Step(m *raftpb.Message) error {
+	return p.raft.Step(m)
 }
 
 // Propose proposes a command to raft
-func (p *Peer) Propose(ctx context.Context, data []byte) error {
-	return p.raftNode.Propose(ctx, data)
+func (p *Peer) Propose(data []byte) bool {
+	return p.raft.Propose(data)
 }
 
 // ReadIndex gets a read index for linearizable read
-func (p *Peer) ReadIndex(ctx context.Context) (uint64, error) {
-	return p.raftNode.ReadIndex(ctx)
+func (p *Peer) ReadIndex() uint64 {
+	return p.raft.ReadIndex()
 }
 
-// Ready returns the ready channel for raft
-func (p *Peer) Ready() <-chan raft.Ready {
-	return p.raftNode.Ready()
+// Ready returns ready state for raft
+func (p *Peer) Ready() raft.Ready {
+	return p.raft.Ready()
 }
 
 // HasReady checks if there are pending ready states
 func (p *Peer) HasReady() bool {
-	return p.raftNode.HasReady()
+	return !p.raft.Ready().IsEmpty()
 }
 
-// Advance advances the raft state machine after processing ready
+// Advance advances raft state machine after processing ready
 func (p *Peer) Advance() {
-	p.raftNode.Advance()
+	p.raft.Advance()
 }
 
-// Stop stops the raft node
+// Stop stops the peer
 func (p *Peer) Stop() {
-	p.raftNode.Stop()
+	// Raft has no explicit stop, just let it go out of scope
 }
 
-// ProcessReady processes the raft ready state
+// ProcessReady processes raft ready state
 func (p *Peer) ProcessReady(rd raft.Ready) error {
 	if rd.HardState != nil && !rd.HardState.IsEmpty() {
 		if err := p.raftStorage.SaveHardState(*rd.HardState); err != nil {
@@ -182,18 +174,18 @@ func (p *Peer) applyCommand(req *raftkvpb.RaftCmdRequest) error {
 	return nil
 }
 
-// GetAppliedIndex returns the current applied index
+// GetAppliedIndex returns current applied index
 func (p *Peer) GetAppliedIndex() uint64 {
 	return p.appliedIndex
 }
 
-// notifyReadWaitQueue notifies the read wait queue when appliedIndex advances
+// notifyReadWaitQueue notifies read wait queue when appliedIndex advances
 func (p *Peer) notifyReadWaitQueue() {
 	p.readWaitQueue.Notify(p.appliedIndex)
 }
 
 // waitForReadIndex waits until appliedIndex reaches readIndex
-func (p *Peer) waitForReadIndex(ctx context.Context, readIndex uint64) error {
+func (p *Peer) waitForReadIndex(readIndex uint64) error {
 	req := &ReadRequest{
 		readIndex: readIndex,
 		done:      make(chan struct{}),
@@ -203,7 +195,7 @@ func (p *Peer) waitForReadIndex(ctx context.Context, readIndex uint64) error {
 	select {
 	case <-req.done:
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-p.node.closeCh:
+		return nil
 	}
 }

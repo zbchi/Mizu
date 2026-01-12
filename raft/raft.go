@@ -310,7 +310,7 @@ func (r *Raft) stepLeader(m *raftpb.Message) error {
 func (r *Raft) campaign() {
 	r.becomeCandidate()
 
-	slog.Debug("node starting campaign", "node", r.id, "term", r.hardState.Term)
+	slog.Info("node starting campaign", "node", r.id, "term", r.hardState.Term)
 
 	// 单节点直接成为 Leader
 	if len(r.prs) == 1 {
@@ -374,7 +374,7 @@ func (r *Raft) canVote(m *raftpb.Message) bool {
 
 func (r *Raft) handleVoteResp(m *raftpb.Message) {
 	r.votes[m.From] = !m.Reject
-	slog.Debug("node received vote", "node", r.id, "from", m.From, "granted", !m.Reject)
+	slog.Info("node received vote", "node", r.id, "from", m.From, "granted", !m.Reject)
 
 	granted, rejected := 0, 0
 	for _, v := range r.votes {
@@ -581,7 +581,7 @@ func (r *Raft) markHardStateChanged() {
 
 func (r *Raft) commitTo(index uint64) {
 	if index > r.hardState.CommitIndex {
-		slog.Debug("commit index advanced", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
+		slog.Info("commit index advanced", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
 		r.hardState.CommitIndex = index
 		r.markHardStateChanged()
 		r.applyCommitted()

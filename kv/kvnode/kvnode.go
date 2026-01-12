@@ -14,7 +14,7 @@ import (
 	"github.com/zbchi/linkv/proto/raftkvpb"
 )
 
-// Config represents the KVNode configuration
+// Config represents KVNode configuration
 type Config struct {
 	NodeID        uint64
 	ClusterID     uint64
@@ -25,7 +25,7 @@ type Config struct {
 	Peers         []proto.PeerInfo
 }
 
-// KVNode represents the Multi-Raft KV store node
+// KVNode represents Multi-Raft KV store node
 type KVNode struct {
 	cfg         *Config
 	storage     storage.Storage
@@ -60,10 +60,13 @@ func NewKVNode(cfg *Config, store storage.Storage) (*KVNode, error) {
 		return nil, err
 	}
 
+	// Create raft worker
+	kn.raftWorker = newRaftWorker(kn.peerRouter, kn)
+
 	return kn, nil
 }
 
-// initPeers initializes the default region peer
+// initPeers initializes default region peer
 func (kn *KVNode) initPeers() error {
 	// Create default region (region 1) with full key range
 	defaultRegion := &region.Region{
@@ -89,7 +92,7 @@ func (kn *KVNode) initPeers() error {
 	return nil
 }
 
-// Start starts the KVNode
+// Start starts KVNode
 func (kn *KVNode) Start() error {
 	slog.Info("Starting KVNode", "node", kn.cfg.NodeID)
 
@@ -98,14 +101,7 @@ func (kn *KVNode) Start() error {
 		return err
 	}
 
-	// Create worker context
-	ctx := &WorkerContext{
-		node:      kn,
-		transport: kn.transport,
-	}
-
-	// Create and start raft worker
-	kn.raftWorker = newRaftWorker(kn.peerRouter, ctx)
+	// Start raft worker
 	kn.raftWorker.start(kn.closeCh)
 
 	// Start ticker
@@ -114,7 +110,7 @@ func (kn *KVNode) Start() error {
 	return nil
 }
 
-// Stop stops the KVNode
+// Stop stops KVNode
 func (kn *KVNode) Stop() error {
 	slog.Info("Stopping KVNode", "node", kn.cfg.NodeID)
 
@@ -147,7 +143,7 @@ func (kn *KVNode) getPeer(regionID uint64) *Peer {
 	return ps.peer
 }
 
-// runTicker runs the ticker for all peers
+// runTicker runs ticker for all peers
 func (kn *KVNode) runTicker() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -190,7 +186,7 @@ func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, 
 	return cb.Wait()
 }
 
-// NodeID returns the current node ID
+// NodeID returns current node ID
 func (kn *KVNode) NodeID() uint64 {
 	return kn.cfg.NodeID
 }
@@ -199,9 +195,9 @@ func (kn *KVNode) NodeID() uint64 {
 func (kn *KVNode) SetTransport(t Transport) {
 	kn.transport = t
 
-	// Update worker context
+	// Update raft worker transport
 	if kn.raftWorker != nil {
-		kn.raftWorker.ctx.transport = t
+		kn.raftWorker.transport = t
 	}
 
 	// Start receiving messages from transport
@@ -221,7 +217,7 @@ func (kn *KVNode) receiveLoop() {
 	}
 }
 
-// CallbackMgr returns the callback manager
+// CallbackMgr returns callback manager
 func (kn *KVNode) CallbackMgr() *CallbackManager {
 	return kn.callbackMgr
 }
@@ -265,13 +261,13 @@ func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftk
 	}
 
 	// Get read index directly from peer
-	readIndex, err := peer.ReadIndex(ctx)
-	if err != nil || readIndex == 0 {
+	readIndex := peer.ReadIndex()
+	if readIndex == 0 {
 		return nil, ErrNotLeader
 	}
 
 	// Wait for appliedIndex to reach readIndex
-	if err := peer.waitForReadIndex(ctx, readIndex); err != nil {
+	if err := peer.waitForReadIndex(readIndex); err != nil {
 		return nil, err
 	}
 

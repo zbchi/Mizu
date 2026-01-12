@@ -1,7 +1,6 @@
 package kvnode
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 
@@ -12,27 +11,22 @@ import (
 	protov2 "google.golang.org/protobuf/proto"
 )
 
-// WorkerContext holds shared context for workers
-type WorkerContext struct {
-	node      *KVNode
-	transport Transport
-}
-
 // raftWorker is responsible for processing raft messages in batches
 type raftWorker struct {
-	router   *PeerRouter
-	ctx      *WorkerContext
-	msgCh    <-chan message.Msg
-	closeCh  chan struct{}
-	stopCh   chan struct{}
-	wg       *sync.WaitGroup
+	router    *PeerRouter
+	node      *KVNode
+	transport Transport
+	msgCh     <-chan message.Msg
+	closeCh   chan struct{}
+	stopCh    chan struct{}
+	wg        *sync.WaitGroup
 }
 
 // newRaftWorker creates a new raftWorker
-func newRaftWorker(router *PeerRouter, ctx *WorkerContext) *raftWorker {
+func newRaftWorker(router *PeerRouter, node *KVNode) *raftWorker {
 	return &raftWorker{
 		router:  router,
-		ctx:     ctx,
+		node:    node,
 		msgCh:   router.MsgChan(),
 		closeCh: make(chan struct{}),
 		stopCh:  make(chan struct{}),
@@ -94,10 +88,9 @@ func (rw *raftWorker) run(closeCh <-chan struct{}) {
 			// Process all messages for this peer
 			for _, msg := range msgs {
 				rw.handleMsg(peerState.peer, msg)
+				// Check and process ready after each message
+				rw.handleReady(peerState.peer)
 			}
-
-			// Handle ready state after processing messages
-			rw.handleReady(peerState.peer)
 		}
 	}
 }
@@ -111,8 +104,7 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
 			slog.Warn("Invalid raft message type", "region", peer.RegionID())
 			return
 		}
-		ctx := context.Background()
-		if err := peer.Step(ctx, raftMsg); err != nil {
+		if err := peer.Step(raftMsg); err != nil {
 			slog.Warn("Failed to step raft", "region", peer.RegionID(), "error", err)
 		}
 
@@ -134,32 +126,31 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg message.Msg) {
 
 // handleRaftCmd handles a raft command (client proposal)
 func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
-	ctx := context.Background()
-
 	// Marshal the request
 	data, err := protov2.Marshal(cmd.Request)
 	if err != nil {
-		rw.ctx.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, err)
+		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, err)
 		return
 	}
 
 	// Register callback BEFORE proposing
-	rw.ctx.node.callbackMgr.Register(cmd, peer.RegionID())
+	rw.node.callbackMgr.Register(cmd, peer.RegionID())
 
 	// Propose to Raft
-	if err := peer.Propose(ctx, data); err != nil {
-		rw.ctx.node.callbackMgr.Unregister(cmd, peer.RegionID())
-		rw.ctx.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, err)
+	if !peer.Propose(data) {
+		rw.node.callbackMgr.Unregister(cmd, peer.RegionID())
+		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), 0, 0, ErrNotLeader)
 	}
 }
 
 // handleReady processes the ready state for a peer
 func (rw *raftWorker) handleReady(peer *Peer) {
-	if !peer.HasReady() {
+	rd := peer.Ready()
+	if rd.IsEmpty() {
 		return
 	}
 
-	rd := <-peer.Ready()
+	// Process ready
 	if err := rw.processReady(peer, rd); err != nil {
 		slog.Error("Failed to process ready", "region", peer.RegionID(), "error", err)
 		return
@@ -197,8 +188,8 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 	// Send messages
 	for _, msg := range rd.Messages {
 		msg.RegionId = peer.RegionID()
-		if rw.ctx.transport != nil {
-			rw.ctx.transport.Send(msg)
+		if rw.transport != nil {
+			rw.transport.Send(msg)
 		}
 	}
 
@@ -228,14 +219,14 @@ func (rw *raftWorker) applyEntry(peer *Peer, entry *raftpb.Entry) {
 
 	var req raftkvpb.RaftCmdRequest
 	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
-		rw.ctx.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	if err := rw.ctx.node.applyCommand(&req); err != nil {
-		rw.ctx.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
+	if err := rw.node.applyCommand(&req); err != nil {
+		rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
 		return
 	}
 
-	rw.ctx.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
+	rw.node.callbackMgr.TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
 }
