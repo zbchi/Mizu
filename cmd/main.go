@@ -8,8 +8,7 @@ import (
 	"strconv"
 
 	"github.com/zbchi/linkv/kv/config"
-	"github.com/zbchi/linkv/kv/kvnode"
-	raft_server "github.com/zbchi/linkv/kv/server"
+	"github.com/zbchi/linkv/kv/node"
 	standalonestorage "github.com/zbchi/linkv/kv/storage/standalone_storage"
 	"github.com/zbchi/linkv/kv/transport"
 	"github.com/zbchi/linkv/proto"
@@ -46,7 +45,7 @@ func main() {
 	}
 	defer store.Stop()
 
-	kvCfg := &kvnode.Config{
+	kvCfg := &node.Config{
 		NodeID:        *id,
 		ClusterID:     *clusterID,
 		RaftAddr:      *raftAddr,
@@ -56,7 +55,7 @@ func main() {
 		Peers:         peerInfos,
 	}
 
-	node, err := kvnode.NewKVNode(kvCfg, store)
+	kvNode, err := node.New(kvCfg, store)
 	if err != nil {
 		slog.Error("Failed to create KVNode", "error", err)
 		os.Exit(1)
@@ -74,16 +73,16 @@ func main() {
 	}
 	defer trans.Close()
 
-	node.SetTransport(trans)
+	kvNode.SetTransport(trans)
 
-	if err := node.Start(); err != nil {
+	if err := kvNode.Start(); err != nil {
 		slog.Error("Failed to start KVNode", "error", err)
 		os.Exit(1)
 	}
-	defer node.Stop()
+	defer kvNode.Stop()
 
 	srv := grpc.NewServer()
-	raftKVServer := raft_server.NewServer(node)
+	raftKVServer := node.NewServer(kvNode)
 	raftkvpb.RegisterRaftKVServer(srv, raftKVServer)
 
 	lis, err := net.Listen("tcp", *addr)

@@ -1,4 +1,4 @@
-package kvnode
+package node
 
 import (
 	"sync"
@@ -6,7 +6,7 @@ import (
 	"github.com/zbchi/linkv/kv/region"
 )
 
-// Router manages key → regionID routing for KVNode.
+// Router manages key → regionID routing for Node.
 // It uses linear scan for simplicity. Future enhancements may include:
 // - Region Split support
 // - Region Merge support

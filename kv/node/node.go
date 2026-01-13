@@ -1,11 +1,11 @@
-package kvnode
+package node
 
 import (
 	"context"
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/kv/kvnode/raftstore"
+	"github.com/zbchi/linkv/kv/raftstore"
 	"github.com/zbchi/linkv/kv/region"
 	"github.com/zbchi/linkv/kv/storage"
 	"github.com/zbchi/linkv/proto"
@@ -24,8 +24,8 @@ type Config struct {
 	Peers         []proto.PeerInfo
 }
 
-// KVNode represents Multi-Raft KV store node
-type KVNode struct {
+// Node represents Multi-Raft KV store node
+type Node struct {
 	cfg       *Config
 	storage   storage.Storage
 	store     *raftstore.Store
@@ -37,9 +37,9 @@ type KVNode struct {
 	sync.RWMutex
 }
 
-// NewKVNode creates a new KVNode
-func NewKVNode(cfg *Config, storage storage.Storage) (*KVNode, error) {
-	kn := &KVNode{
+// New creates a new Node
+func New(cfg *Config, storage storage.Storage) (*Node, error) {
+	kn := &Node{
 		cfg:     cfg,
 		storage: storage,
 		router:  NewRouter(),
@@ -61,7 +61,7 @@ func NewKVNode(cfg *Config, storage storage.Storage) (*KVNode, error) {
 }
 
 // initPeers initializes default region peer
-func (kn *KVNode) initPeers() error {
+func (kn *Node) initPeers() error {
 	// Create default region (region 1) with full key range
 	defaultRegion := &region.Region{
 		ID:       1,
@@ -85,7 +85,7 @@ func (kn *KVNode) initPeers() error {
 }
 
 // Start starts KVNode
-func (kn *KVNode) Start() error {
+func (kn *Node) Start() error {
 	slog.Info("Starting KVNode", "node", kn.cfg.NodeID)
 
 	// Start storage
@@ -100,7 +100,7 @@ func (kn *KVNode) Start() error {
 }
 
 // Stop stops KVNode
-func (kn *KVNode) Stop() error {
+func (kn *Node) Stop() error {
 	slog.Info("Stopping KVNode", "node", kn.cfg.NodeID)
 
 	kn.closeOnce.Do(func() {
@@ -119,12 +119,12 @@ func (kn *KVNode) Stop() error {
 }
 
 // getPeer returns peer by regionID
-func (kn *KVNode) getPeer(regionID uint64) *raftstore.Peer {
+func (kn *Node) getPeer(regionID uint64) *raftstore.Peer {
 	return kn.store.GetPeer(regionID)
 }
 
 // Put writes a command through Raft log
-func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func (kn *Node) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	key := req.Requests[0].Put.Key
 	slog.Info("Put request received", "node", kn.cfg.NodeID, "key", string(key))
 
@@ -152,23 +152,23 @@ func (kn *KVNode) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, 
 }
 
 // NodeID returns current node ID
-func (kn *KVNode) NodeID() uint64 {
+func (kn *Node) NodeID() uint64 {
 	return kn.cfg.NodeID
 }
 
 // SetTransport sets the transport for network communication
-func (kn *KVNode) SetTransport(t raftstore.Transport) {
+func (kn *Node) SetTransport(t raftstore.Transport) {
 	kn.transport = t
 	kn.store.SetTransport(t)
 }
 
 // CallbackMgr returns callback manager
-func (kn *KVNode) CallbackMgr() *raftstore.CallbackManager {
+func (kn *Node) CallbackMgr() *raftstore.CallbackManager {
 	return kn.store.CallbackMgr()
 }
 
 // ApplyCommand applies a raft command to storage (implements CommandApplier interface)
-func (kn *KVNode) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
+func (kn *Node) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 	if len(req.Requests) == 0 {
 		return nil
 	}
@@ -196,7 +196,7 @@ func (kn *KVNode) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 }
 
 // Get performs a linearizable read using ReadIndex
-func (kn *KVNode) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	getReq := req.Requests[0].Get
 
 	// Route key to region
