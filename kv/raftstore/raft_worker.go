@@ -224,6 +224,7 @@ func (rw *raftWorker) applyEntries(peer *Peer, entries []*raftpb.Entry) {
 		peer.appliedIndex = entry.Index
 	}
 	// Notify waiting read requests for this peer
+
 	peer.notifyReadWaitQueue()
 }
 

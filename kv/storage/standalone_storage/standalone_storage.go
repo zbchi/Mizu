@@ -3,8 +3,8 @@ package standalonestorage
 import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/linkv/kv/config"
-	"github.com/zbchi/linkv/kv/storage/raftstorage"
 	"github.com/zbchi/linkv/kv/storage"
+	"github.com/zbchi/linkv/kv/storage/raftstorage"
 	"github.com/zbchi/linkv/proto/linkvpb"
 	raftbadger "github.com/zbchi/linkv/raft"
 )

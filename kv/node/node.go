@@ -209,17 +209,20 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 	// Route to peer
 	peer := kn.getPeer(regionID)
 	if peer == nil {
+		slog.Error("Peer not found for region", "regionID", regionID)
 		return nil, raftstore.ErrNotLeader
 	}
 
 	// Get read index directly from peer
 	readIndex := peer.ReadIndex()
 	if readIndex == 0 {
+		slog.Error("ReadIndex failed, node is not leader", "regionID", regionID)
 		return nil, raftstore.ErrNotLeader
 	}
 
 	// Wait for appliedIndex to reach readIndex
-	if err := peer.WaitForReadIndex(readIndex); err != nil {
+	if err := peer.WaitForReadIndex(ctx, readIndex); err != nil {
+		slog.Error("WaitForReadIndex failed", "error", err, "readIndex", readIndex)
 		return nil, err
 	}
 
@@ -227,12 +230,14 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 	storageCtx := &linkvpb.Context{}
 	reader, err := kn.storage.Reader(storageCtx)
 	if err != nil {
+		slog.Error("Failed to get storage reader", "error", err)
 		return nil, err
 	}
 	defer reader.Close()
 
 	value, err := reader.GetCF(getReq.Cf, getReq.Key)
 	if err != nil {
+		slog.Error("Failed to read from storage", "error", err, "key", string(getReq.Key))
 		return nil, err
 	}
 

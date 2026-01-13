@@ -1,6 +1,8 @@
 package raftstore
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -16,7 +18,7 @@ type Peer struct {
 	raftStorage  raft.RaftStorage
 	appliedIndex uint64
 
-	closeCh      chan struct{}
+	closeCh       chan struct{}
 	readWaitQueue *ReadWaitQueue
 }
 
@@ -27,11 +29,28 @@ func NewPeer(reg *region.Region, nodeID uint64, closeCh chan struct{}, raftStora
 		peerIDs[i] = p.NodeID
 	}
 
+	raftInst := raft.NewRaft(raft.Config{ID: nodeID, Peers: peerIDs})
+
+	// Restore raft state from storage
+	hardState, err := raftStorage.LoadHardState()
+	if err != nil {
+		slog.Warn("Failed to load hard state, starting fresh", "error", err)
+	} else if !hardState.IsEmpty() {
+		// Load entries from storage
+		entries, err := raftStorage.LoadEntries(0, hardState.CommitIndex+1)
+		if err != nil {
+			slog.Error("Failed to load entries", "error", err)
+		} else {
+			raftInst.RestoreState(hardState, entries)
+			slog.Info("Restored raft state", "commitIndex", hardState.CommitIndex, "term", hardState.Term, "entries", len(entries))
+		}
+	}
+
 	return &Peer{
 		region:        reg,
-		raft:          raft.NewRaft(raft.Config{ID: nodeID, Peers: peerIDs}),
+		raft:          raftInst,
 		raftStorage:   raftStorage,
-		appliedIndex:  0,
+		appliedIndex:  hardState.CommitIndex,
 		closeCh:       closeCh,
 		readWaitQueue: &ReadWaitQueue{},
 	}
@@ -98,16 +117,30 @@ func (p *Peer) notifyReadWaitQueue() {
 }
 
 // WaitForReadIndex waits until appliedIndex reaches readIndex
-func (p *Peer) WaitForReadIndex(readIndex uint64) error {
+func (p *Peer) WaitForReadIndex(ctx context.Context, readIndex uint64) error {
+	slog.Info("WaitForReadIndex called", "readIndex", readIndex, "currentAppliedIndex", p.appliedIndex)
+
+	if p.appliedIndex >= readIndex {
+		slog.Info("WaitForReadIndex condition already satisfied", "readIndex", readIndex, "appliedIndex", p.appliedIndex)
+		return nil
+	}
+
 	req := &ReadRequest{
 		ReadIndex: readIndex,
 		Done:      make(chan struct{}),
+		AddedAt:   time.Now(),
 	}
 	p.readWaitQueue.Add(req)
 
+	slog.Info("WaitForReadIndex added to queue", "readIndex", readIndex, "queueSize", len(p.readWaitQueue.queue))
+
 	select {
 	case <-req.Done:
+		slog.Info("WaitForReadIndex completed", "readIndex", readIndex)
 		return nil
+	case <-ctx.Done():
+		slog.Warn("WaitForReadIndex canceled by client", "readIndex", readIndex, "error", ctx.Err())
+		return ctx.Err()
 	case <-p.closeCh:
 		return nil
 	}
@@ -124,9 +157,16 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	slog.Info("notify-----------------------")
+	if len(q.queue) == 0 {
+		slog.Info("read notify queue == 0")
+		return
+	}
+
 	newQueue := make([]*ReadRequest, 0, len(q.queue))
 	for _, req := range q.queue {
 		if appliedIndex >= req.ReadIndex {
+			slog.Info("read request ready", "appliedIndex", appliedIndex, "readIndex", req.ReadIndex)
 			close(req.Done)
 
 			waitTime := time.Since(req.AddedAt)
