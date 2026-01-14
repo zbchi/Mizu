@@ -20,6 +20,8 @@ const (
 	MsgTypeRaftCmd
 	// MsgTypeTick is for raft ticker
 	MsgTypeTick
+	// MsgTypeSnapshotTrigger is for triggering snapshot creation
+	MsgTypeSnapshotTrigger
 )
 
 // Msg is an internal message for routing to peers
@@ -27,6 +29,12 @@ type Msg struct {
 	Type     MsgType
 	RegionID uint64
 	Data     interface{}
+}
+
+// SnapshotTrigger represents a trigger for snapshot creation
+type SnapshotTrigger struct {
+	Index uint64
+	Data  []byte
 }
 
 // CommandApplier is the interface for applying raft commands to state machine

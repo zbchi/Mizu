@@ -123,6 +123,9 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg Msg) {
 	case MsgTypeTick:
 		peer.Tick()
 
+	case MsgTypeSnapshotTrigger:
+		rw.handleSnapshotTrigger(peer, msg.Data)
+
 	default:
 		slog.Warn("Unknown message type", "type", msg.Type, "region", peer.RegionID())
 	}
@@ -152,6 +155,34 @@ func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
 	}
 
 	slog.Info("handleRaftCmd: propose succeeded", "region", peer.RegionID())
+}
+
+// handleSnapshotTrigger handles snapshot creation trigger
+func (rw *raftWorker) handleSnapshotTrigger(peer *Peer, data interface{}) {
+	trig, ok := data.(*SnapshotTrigger)
+	if !ok {
+		slog.Warn("invalid snapshot trigger")
+		return
+	}
+
+	slog.Info("raft_worker: trigger snapshot", "region", peer.RegionID(), "index", trig.Index)
+
+	// Create snapshot object
+	term := peer.raft.Term()
+	sn := &raftpb.Snapshot{
+		Term:  term,
+		Index: trig.Index,
+		Data:  trig.Data,
+	}
+
+	// Save snapshot to storage first (before compacting log)
+	if err := peer.raftStorage.SaveSnapshot(sn); err != nil {
+		slog.Error("save snapshot failed", "error", err)
+		return
+	}
+
+	// Then compact the log in raft
+	peer.raft.Snapshot(trig.Index, trig.Data)
 }
 
 // handleReady processes the ready state for a peer

@@ -13,10 +13,11 @@ import (
 
 // Peer represents a region replica on this node
 type Peer struct {
-	region       *region.Region
-	raft         *raft.Raft
-	raftStorage  raft.RaftStorage
-	appliedIndex uint64
+	region            *region.Region
+	raft              *raft.Raft
+	raftStorage       raft.RaftStorage
+	appliedIndex      uint64
+	lastSnapshotIndex uint64
 
 	closeCh       chan struct{}
 	readWaitQueue *ReadWaitQueue

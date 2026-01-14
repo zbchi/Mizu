@@ -10,6 +10,11 @@ import (
 	protov2 "google.golang.org/protobuf/proto"
 )
 
+const (
+	// SnapshotThreshold is the number of applied entries after which a snapshot is triggered
+	SnapshotThreshold = 5
+)
+
 // ApplyTask represents a task to apply committed entries for a region
 type ApplyTask struct {
 	RegionID uint64
@@ -104,6 +109,24 @@ func (aw *applyWorker) apply(task ApplyTask) {
 
 		aw.store.CallbackMgr().TriggerForRegion(task.RegionID, entry.Index, entry.Term, nil)
 		task.Peer.appliedIndex = entry.Index
+
+		// snapshot trigger
+		if task.Peer.appliedIndex-task.Peer.lastSnapshotIndex >= SnapshotThreshold {
+			slog.Info("snapshot threshold reached", "region", task.RegionID, "index", task.Peer.appliedIndex)
+
+			// Get snapshot data from raftStorage
+			data := task.Peer.raftStorage.MakeSnapshotData()
+
+			aw.store.peerRouter.Send(task.RegionID, Msg{
+				Type: MsgTypeSnapshotTrigger,
+				Data: &SnapshotTrigger{
+					Index: task.Peer.appliedIndex,
+					Data:  data,
+				},
+			})
+
+			task.Peer.lastSnapshotIndex = task.Peer.appliedIndex
+		}
 	}
 
 	// Notify waiting read requests for this peer
