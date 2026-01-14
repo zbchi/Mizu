@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/proto/raftkvpb"
 	"github.com/zbchi/linkv/proto/raftpb"
 	"github.com/zbchi/linkv/raft"
 	protov2 "google.golang.org/protobuf/proto"
@@ -190,12 +189,9 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 		}
 	}
 
-	// Save/Apply Snapshot
-	if rd.Snapshot != nil {
+	// Persist Snapshot (只保存，不apply)
+	if !raft.IsEmptySnap(rd.Snapshot) {
 		if err := peer.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
-			return err
-		}
-		if err := peer.raftStorage.ApplySnapshotData(rd.Snapshot.Data); err != nil {
 			return err
 		}
 	}
@@ -208,48 +204,19 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 		}
 	}
 
-	// Apply committed entries
-	if len(rd.CommittedEntries) > 0 {
-		slog.Info("processReady: applying committed entries", "region", peer.RegionID(), "count", len(rd.CommittedEntries))
-		rw.applyEntries(peer, rd.CommittedEntries)
+	// 提交 snapshot + committed entries 给 apply_worker
+	if !raft.IsEmptySnap(rd.Snapshot) || len(rd.CommittedEntries) > 0 {
+		slog.Info("processReady: submitting task to applyWorker", "region", peer.RegionID(),
+			"hasSnapshot", !raft.IsEmptySnap(rd.Snapshot), "entries", len(rd.CommittedEntries))
+		rw.store.applyWorker.Submit(ApplyTask{
+			RegionID: peer.RegionID(),
+			Peer:     peer,
+			Snapshot: rd.Snapshot,
+			Entries:  rd.CommittedEntries,
+		})
 	}
 
 	return nil
-}
-
-// applyEntries applies committed entries for a peer
-func (rw *raftWorker) applyEntries(peer *Peer, entries []*raftpb.Entry) {
-	for _, entry := range entries {
-		rw.applyEntry(peer, entry)
-		peer.appliedIndex = entry.Index
-	}
-	// Notify waiting read requests for this peer
-
-	peer.notifyReadWaitQueue()
-}
-
-// applyEntry applies a single entry
-func (rw *raftWorker) applyEntry(peer *Peer, entry *raftpb.Entry) {
-	if len(entry.Data) == 0 {
-		return
-	}
-
-	slog.Info("applyEntry: applying entry", "region", peer.RegionID(), "index", entry.Index, "term", entry.Term)
-
-	var req raftkvpb.RaftCmdRequest
-	if err := protov2.Unmarshal(entry.Data, &req); err != nil {
-		slog.Error("applyEntry: failed to unmarshal request", "error", err, "index", entry.Index)
-		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
-		return
-	}
-
-	if err := rw.store.ApplyCommand(&req); err != nil {
-		slog.Error("applyEntry: failed to apply command", "error", err, "index", entry.Index)
-		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, err)
-		return
-	}
-
-	rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), entry.Index, entry.Term, nil)
 }
 
 // Transport defines the interface for sending and receiving Raft messages over network

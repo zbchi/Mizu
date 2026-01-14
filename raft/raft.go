@@ -179,9 +179,9 @@ func (r *Raft) Advance() {
 	r.msgs = nil
 }
 
-func (r *Raft) Snapshot(index uint64, data []byte) *raftpb.Snapshot {
+func (r *Raft) Snapshot(index uint64, data []byte) {
 	if index <= r.raftLog.FirstIndex() {
-		return nil
+		return
 	}
 
 	term := r.raftLog.Term(index)
@@ -210,7 +210,6 @@ func (r *Raft) Snapshot(index uint64, data []byte) *raftpb.Snapshot {
 
 	//保存快照供 sendSnapshot 使用
 	r.currentSnapshot = sn
-	return sn
 }
 
 func (r *Raft) State() StateType    { return r.state }
@@ -220,20 +219,19 @@ func (r *Raft) Lead() uint64        { return r.lead }
 func (r *Raft) ID() uint64          { return r.id }
 func (r *Raft) CommitIndex() uint64 { return r.hardState.CommitIndex }
 
-// ReadIndex returns the current commit index for linearizable read.
-// It should only be called on the leader.
-// The caller must wait until appliedIndex >= commitIndex before reading from state machine.
 func (r *Raft) ReadIndex() uint64 {
-	// Only leader can serve ReadIndex requests
 	if r.state != StateLeader {
 		return 0
 	}
 	return r.hardState.CommitIndex
 }
 
-// LastIndex returns the last index in the raft log
 func (r *Raft) LastIndex() uint64 {
 	return r.raftLog.LastIndex()
+}
+
+func (r *Raft) AppliedIndex() uint64 {
+	return r.raftLog.AppliedIndex()
 }
 
 func (r *Raft) becomeFollower(term, lead uint64) {

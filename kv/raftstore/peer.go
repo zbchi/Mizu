@@ -31,26 +31,53 @@ func NewPeer(reg *region.Region, nodeID uint64, closeCh chan struct{}, raftStora
 
 	raftInst := raft.NewRaft(raft.Config{ID: nodeID, Peers: peerIDs})
 
-	// Restore raft state from storage
+	// 1. Load snapshot
+	snapshot, err := raftStorage.LoadSnapshot()
+	if err != nil {
+		slog.Warn("Failed to load snapshot", "error", err)
+		snapshot = nil
+	}
+
+	// 2. Load hard state
 	hardState, err := raftStorage.LoadHardState()
 	if err != nil {
-		slog.Warn("Failed to load hard state, starting fresh", "error", err)
-	} else if !hardState.IsEmpty() {
-		// Load entries from storage
-		entries, err := raftStorage.LoadEntries(0, hardState.CommitIndex+1)
+		slog.Warn("Failed to load hard state", "error", err)
+	}
+
+	// 3. Load entries from storage
+	// entries after snapshot: [snapshotIndex+1, commitIndex)
+	var entries []*raftpb.Entry
+	if !hardState.IsEmpty() {
+		start := uint64(0)
+		if snapshot != nil && snapshot.Index > 0 {
+			start = snapshot.Index + 1
+		}
+		entries, err = raftStorage.LoadEntries(start, hardState.CommitIndex+1)
 		if err != nil {
 			slog.Error("Failed to load entries", "error", err)
-		} else {
-			raftInst.RestoreState(hardState, entries)
-			slog.Info("Restored raft state", "commitIndex", hardState.CommitIndex, "term", hardState.Term, "entries", len(entries))
 		}
 	}
+
+	// 4. Restore snapshot to Raft
+	if snapshot != nil && snapshot.Index > 0 {
+		raftInst.RestoreSnapshot(snapshot)
+		slog.Info("Restored raft state from snapshot", "snapshotIndex", snapshot.Index, "snapshotTerm", snapshot.Term)
+	}
+
+	// 5. Restore hard state and entries to Raft
+	if !hardState.IsEmpty() {
+		raftInst.RestoreState(hardState, entries)
+		slog.Info("Restored raft state", "commitIndex", hardState.CommitIndex, "term", hardState.Term, "entries", len(entries))
+	}
+
+	// 6. Set appliedIndex with raft state machine
+	appliedIndex := raftInst.AppliedIndex()
 
 	return &Peer{
 		region:        reg,
 		raft:          raftInst,
 		raftStorage:   raftStorage,
-		appliedIndex:  hardState.CommitIndex,
+		appliedIndex:  appliedIndex,
 		closeCh:       closeCh,
 		readWaitQueue: &ReadWaitQueue{},
 	}
@@ -157,7 +184,6 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	slog.Info("notify-----------------------")
 	if len(q.queue) == 0 {
 		slog.Info("read notify queue == 0")
 		return

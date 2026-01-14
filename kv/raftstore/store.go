@@ -40,6 +40,7 @@ type Store struct {
 	peerRouter  *PeerRouter
 	callbackMgr *CallbackManager
 	raftWorker  *raftWorker
+	applyWorker *applyWorker
 	regionMap   *region.RegionMap
 	transport   Transport
 	closeCh     chan struct{}
@@ -70,18 +71,23 @@ func (s *Store) Init(node PeerGetter, applier CommandApplier) {
 	s.callbackMgr = NewCallbackManager(node)
 	s.applier = applier
 	s.raftWorker = newRaftWorker(s.peerRouter, s)
+	s.applyWorker = newApplyWorker(s)
 }
 
-// Start starts the raft worker and ticker
+// Start starts the raft worker, apply worker, and ticker
 func (s *Store) Start() {
 	s.raftWorker.start(s.closeCh)
+	s.applyWorker.start()
 	go s.runTicker()
 }
 
-// Stop stops the raft worker and closes all peers
+// Stop stops the raft worker, apply worker, and closes all peers
 func (s *Store) Stop() {
 	if s.raftWorker != nil {
 		s.raftWorker.stop()
+	}
+	if s.applyWorker != nil {
+		s.applyWorker.stop()
 	}
 	s.peerRouter.CloseAll()
 }
