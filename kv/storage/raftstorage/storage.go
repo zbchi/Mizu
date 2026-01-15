@@ -71,6 +71,46 @@ func (s *Storage) SaveEntries(entries []*raftpb.Entry) error {
 	})
 }
 
+// Compact deletes all logs before the given index, keeping index and all logs after it
+func (s *Storage) Compact(index uint64) error {
+	if index == 0 {
+		return nil
+	}
+
+	return s.db.Update(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		start := entryKey(0)
+		it.Seek(start)
+
+		for ; it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+
+			if !bytes.HasPrefix(key, []byte(keyEntry)) {
+				break
+			}
+
+			if len(key) < len(keyEntry)+8 {
+				break
+			}
+
+			idx := binary.BigEndian.Uint64(key[len(keyEntry):])
+
+			if idx >= index {
+				break
+			}
+
+			k := item.KeyCopy(nil)
+			if err := txn.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Storage) TruncateFrom(index uint64) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)

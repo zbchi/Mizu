@@ -14,6 +14,7 @@ type RaftStorage interface {
 	SaveEntries(entries []*raftpb.Entry) error
 	LoadEntries(lo uint64, hi uint64) ([]*raftpb.Entry, error)
 	TruncateFrom(index uint64) error
+	Compact(index uint64) error
 
 	SaveSnapshot(sn *raftpb.Snapshot) error
 	LoadSnapshot() (*raftpb.Snapshot, error)

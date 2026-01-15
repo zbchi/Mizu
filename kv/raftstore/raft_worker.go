@@ -181,8 +181,16 @@ func (rw *raftWorker) handleSnapshotTrigger(peer *Peer, data interface{}) {
 		return
 	}
 
-	// Then compact the log in raft
+	// Compact the log in raft
 	peer.raft.Snapshot(trig.Index, trig.Data)
+
+	// Compact the log in storage
+	if err := peer.raftStorage.Compact(trig.Index); err != nil {
+		slog.Error("compact log failed", "error", err)
+		return
+	}
+
+	slog.Info("raft_worker: log compacted", "region", peer.RegionID(), "index", trig.Index)
 }
 
 // handleReady processes the ready state for a peer
