@@ -59,7 +59,7 @@ type Store struct {
 
 // RaftStorageProvider provides raft storage for peers
 type RaftStorageProvider interface {
-	RaftStorage() raft.RaftStorage
+	RaftStorage(regionID uint64) raft.RaftStorage
 }
 
 // NewStore creates a new Store for managing raft peers

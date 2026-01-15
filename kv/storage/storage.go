@@ -12,8 +12,8 @@ type Storage interface {
 	Reader(ctx *linkvpb.Context) (StorageReader, error)
 	Write(ctx *linkvpb.Context, batch []Modify) error
 
-	// RaftStorage returns the Raft state storage
-	RaftStorage() raft.RaftStorage
+	// RaftStorage returns the Raft state storage for a region.
+	RaftStorage(regionID uint64) raft.RaftStorage
 }
 
 type StorageReader interface {

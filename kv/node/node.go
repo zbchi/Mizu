@@ -75,7 +75,7 @@ func (kn *Node) initPeers() error {
 	kn.router.AddRegion(defaultRegion)
 
 	// Create peer for region 1
-	raftStorage := kn.storage.RaftStorage()
+	raftStorage := kn.storage.RaftStorage(defaultRegion.ID)
 	peer := raftstore.NewPeer(defaultRegion, kn.cfg.NodeID, kn.closeCh, raftStorage)
 
 	// Add peer to store

@@ -10,8 +10,7 @@ import (
 )
 
 type StandaloneStorage struct {
-	db          *badger.DB
-	raftStorage raftbadger.RaftStorage
+	db *badger.DB
 }
 
 func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
@@ -21,8 +20,7 @@ func NewStandaloneStorage(conf *config.Config) *StandaloneStorage {
 		panic(err)
 	}
 	return &StandaloneStorage{
-		db:          db,
-		raftStorage: raftstorage.NewStorage(db),
+		db: db,
 	}
 }
 
@@ -34,8 +32,8 @@ func (s *StandaloneStorage) Stop() error {
 	return s.db.Close()
 }
 
-func (s *StandaloneStorage) RaftStorage() raftbadger.RaftStorage {
-	return s.raftStorage
+func (s *StandaloneStorage) RaftStorage(regionID uint64) raftbadger.RaftStorage {
+	return raftstorage.NewStorage(s.db, regionID)
 }
 
 func (s *StandaloneStorage) Reader(ctx *linkvpb.Context) (storage.StorageReader, error) {
