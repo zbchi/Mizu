@@ -2,11 +2,11 @@ package standalonestorage
 
 import (
 	"github.com/dgraph-io/badger/v3"
-	"github.com/zbchi/linkv/kv/config"
-	"github.com/zbchi/linkv/kv/storage"
-	"github.com/zbchi/linkv/kv/storage/raftstorage"
-	"github.com/zbchi/linkv/proto/linkvpb"
-	raftbadger "github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/kv/config"
+	"github.com/zbchi/mizu/kv/storage"
+	"github.com/zbchi/mizu/kv/storage/raftstorage"
+	"github.com/zbchi/mizu/proto/mizupb"
+	raftbadger "github.com/zbchi/mizu/raft"
 )
 
 type StandaloneStorage struct {
@@ -36,12 +36,12 @@ func (s *StandaloneStorage) RaftStorage(regionID uint64) raftbadger.RaftStorage 
 	return raftstorage.NewStorage(s.db, regionID)
 }
 
-func (s *StandaloneStorage) Reader(ctx *linkvpb.Context) (storage.StorageReader, error) {
+func (s *StandaloneStorage) Reader(ctx *mizupb.Context) (storage.StorageReader, error) {
 	txn := s.db.NewTransaction(false)
 	return &StandaloneReader{txn: txn}, nil
 }
 
-func (s *StandaloneStorage) Write(ctx *linkvpb.Context, batch []storage.Modify) error {
+func (s *StandaloneStorage) Write(ctx *mizupb.Context, batch []storage.Modify) error {
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		for _, m := range batch {

@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/zbchi/linkv/kv/region"
-	"github.com/zbchi/linkv/proto/raftkvpb"
-	"github.com/zbchi/linkv/proto/raftpb"
-	"github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/kv/region"
+	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/raftpb"
+	"github.com/zbchi/mizu/raft"
 )
 
 // MsgType represents the type of internal message

@@ -1,6 +1,6 @@
 package raft
 
-import "github.com/zbchi/linkv/proto/raftpb"
+import "github.com/zbchi/mizu/proto/raftpb"
 
 // RaftLog 管理 Raft 日志
 type RaftLog struct {

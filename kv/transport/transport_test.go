@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zbchi/linkv/proto/raftpb"
+	"github.com/zbchi/mizu/proto/raftpb"
 )
 
 // getFreePort 获取一个可用的端口

@@ -1,4 +1,4 @@
-module github.com/zbchi/linkv
+module github.com/zbchi/mizu
 
 go 1.24.0
 

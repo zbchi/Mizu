@@ -7,12 +7,12 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/zbchi/linkv/kv/config"
-	"github.com/zbchi/linkv/kv/node"
-	standalonestorage "github.com/zbchi/linkv/kv/storage/standalone_storage"
-	"github.com/zbchi/linkv/kv/transport"
-	"github.com/zbchi/linkv/proto"
-	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/mizu/kv/config"
+	"github.com/zbchi/mizu/kv/node"
+	standalonestorage "github.com/zbchi/mizu/kv/storage/standalone_storage"
+	"github.com/zbchi/mizu/kv/transport"
+	"github.com/zbchi/mizu/proto"
+	"github.com/zbchi/mizu/proto/raftkvpb"
 
 	"google.golang.org/grpc"
 )
@@ -22,7 +22,7 @@ func main() {
 	clusterID := flag.Uint64("cluster", 1, "Cluster ID")
 	raftAddr := flag.String("raft-addr", ":3001", "Raft communication address")
 	addr := flag.String("addr", ":2008", "KV service address")
-	dbPath := flag.String("db", "/tmp/linkv-raft", "Database path")
+	dbPath := flag.String("db", "/tmp/mizu-raft", "Database path")
 	peers := flag.String("peers", "", "Peers in format: id1@addr1,id2@addr2...")
 	flag.Parse()
 

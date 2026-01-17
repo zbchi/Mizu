@@ -2,15 +2,15 @@ package storage
 
 import (
 	"github.com/dgraph-io/badger/v3"
-	"github.com/zbchi/linkv/proto/linkvpb"
-	"github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/proto/mizupb"
+	"github.com/zbchi/mizu/raft"
 )
 
 type Storage interface {
 	Start() error
 	Stop() error
-	Reader(ctx *linkvpb.Context) (StorageReader, error)
-	Write(ctx *linkvpb.Context, batch []Modify) error
+	Reader(ctx *mizupb.Context) (StorageReader, error)
+	Write(ctx *mizupb.Context, batch []Modify) error
 
 	// RaftStorage returns the Raft state storage for a region.
 	RaftStorage(regionID uint64) raft.RaftStorage

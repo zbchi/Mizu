@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: linkvpb/linkv.proto
+// source: mizupb/mizu.proto
 
-package linkvpb
+package mizupb
 
 import (
 	context "context"
@@ -19,217 +19,217 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Linkv_RawGet_FullMethodName    = "/linkvpb.Linkv/RawGet"
-	Linkv_RawPut_FullMethodName    = "/linkvpb.Linkv/RawPut"
-	Linkv_RawDelete_FullMethodName = "/linkvpb.Linkv/RawDelete"
-	Linkv_RawScan_FullMethodName   = "/linkvpb.Linkv/RawScan"
+	Mizu_RawGet_FullMethodName    = "/mizupb.Mizu/RawGet"
+	Mizu_RawPut_FullMethodName    = "/mizupb.Mizu/RawPut"
+	Mizu_RawDelete_FullMethodName = "/mizupb.Mizu/RawDelete"
+	Mizu_RawScan_FullMethodName   = "/mizupb.Mizu/RawScan"
 )
 
-// LinkvClient is the client API for Linkv service.
+// MizuClient is the client API for Mizu service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type LinkvClient interface {
+type MizuClient interface {
 	RawGet(ctx context.Context, in *RawGetRequest, opts ...grpc.CallOption) (*RawGetResponse, error)
 	RawPut(ctx context.Context, in *RawPutRequest, opts ...grpc.CallOption) (*RawPutResponse, error)
 	RawDelete(ctx context.Context, in *RawDeleteRequest, opts ...grpc.CallOption) (*RawDeleteResponse, error)
 	RawScan(ctx context.Context, in *RawScanRequest, opts ...grpc.CallOption) (*RawScanResponse, error)
 }
 
-type linkvClient struct {
+type mizuClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewLinkvClient(cc grpc.ClientConnInterface) LinkvClient {
-	return &linkvClient{cc}
+func NewMizuClient(cc grpc.ClientConnInterface) MizuClient {
+	return &mizuClient{cc}
 }
 
-func (c *linkvClient) RawGet(ctx context.Context, in *RawGetRequest, opts ...grpc.CallOption) (*RawGetResponse, error) {
+func (c *mizuClient) RawGet(ctx context.Context, in *RawGetRequest, opts ...grpc.CallOption) (*RawGetResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RawGetResponse)
-	err := c.cc.Invoke(ctx, Linkv_RawGet_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Mizu_RawGet_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *linkvClient) RawPut(ctx context.Context, in *RawPutRequest, opts ...grpc.CallOption) (*RawPutResponse, error) {
+func (c *mizuClient) RawPut(ctx context.Context, in *RawPutRequest, opts ...grpc.CallOption) (*RawPutResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RawPutResponse)
-	err := c.cc.Invoke(ctx, Linkv_RawPut_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Mizu_RawPut_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *linkvClient) RawDelete(ctx context.Context, in *RawDeleteRequest, opts ...grpc.CallOption) (*RawDeleteResponse, error) {
+func (c *mizuClient) RawDelete(ctx context.Context, in *RawDeleteRequest, opts ...grpc.CallOption) (*RawDeleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RawDeleteResponse)
-	err := c.cc.Invoke(ctx, Linkv_RawDelete_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Mizu_RawDelete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *linkvClient) RawScan(ctx context.Context, in *RawScanRequest, opts ...grpc.CallOption) (*RawScanResponse, error) {
+func (c *mizuClient) RawScan(ctx context.Context, in *RawScanRequest, opts ...grpc.CallOption) (*RawScanResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RawScanResponse)
-	err := c.cc.Invoke(ctx, Linkv_RawScan_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, Mizu_RawScan_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// LinkvServer is the server API for Linkv service.
-// All implementations must embed UnimplementedLinkvServer
+// MizuServer is the server API for Mizu service.
+// All implementations must embed UnimplementedMizuServer
 // for forward compatibility.
-type LinkvServer interface {
+type MizuServer interface {
 	RawGet(context.Context, *RawGetRequest) (*RawGetResponse, error)
 	RawPut(context.Context, *RawPutRequest) (*RawPutResponse, error)
 	RawDelete(context.Context, *RawDeleteRequest) (*RawDeleteResponse, error)
 	RawScan(context.Context, *RawScanRequest) (*RawScanResponse, error)
-	mustEmbedUnimplementedLinkvServer()
+	mustEmbedUnimplementedMizuServer()
 }
 
-// UnimplementedLinkvServer must be embedded to have
+// UnimplementedMizuServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedLinkvServer struct{}
+type UnimplementedMizuServer struct{}
 
-func (UnimplementedLinkvServer) RawGet(context.Context, *RawGetRequest) (*RawGetResponse, error) {
+func (UnimplementedMizuServer) RawGet(context.Context, *RawGetRequest) (*RawGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RawGet not implemented")
 }
-func (UnimplementedLinkvServer) RawPut(context.Context, *RawPutRequest) (*RawPutResponse, error) {
+func (UnimplementedMizuServer) RawPut(context.Context, *RawPutRequest) (*RawPutResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RawPut not implemented")
 }
-func (UnimplementedLinkvServer) RawDelete(context.Context, *RawDeleteRequest) (*RawDeleteResponse, error) {
+func (UnimplementedMizuServer) RawDelete(context.Context, *RawDeleteRequest) (*RawDeleteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RawDelete not implemented")
 }
-func (UnimplementedLinkvServer) RawScan(context.Context, *RawScanRequest) (*RawScanResponse, error) {
+func (UnimplementedMizuServer) RawScan(context.Context, *RawScanRequest) (*RawScanResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RawScan not implemented")
 }
-func (UnimplementedLinkvServer) mustEmbedUnimplementedLinkvServer() {}
-func (UnimplementedLinkvServer) testEmbeddedByValue()               {}
+func (UnimplementedMizuServer) mustEmbedUnimplementedMizuServer() {}
+func (UnimplementedMizuServer) testEmbeddedByValue()              {}
 
-// UnsafeLinkvServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to LinkvServer will
+// UnsafeMizuServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to MizuServer will
 // result in compilation errors.
-type UnsafeLinkvServer interface {
-	mustEmbedUnimplementedLinkvServer()
+type UnsafeMizuServer interface {
+	mustEmbedUnimplementedMizuServer()
 }
 
-func RegisterLinkvServer(s grpc.ServiceRegistrar, srv LinkvServer) {
-	// If the following call pancis, it indicates UnimplementedLinkvServer was
+func RegisterMizuServer(s grpc.ServiceRegistrar, srv MizuServer) {
+	// If the following call pancis, it indicates UnimplementedMizuServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&Linkv_ServiceDesc, srv)
+	s.RegisterService(&Mizu_ServiceDesc, srv)
 }
 
-func _Linkv_RawGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Mizu_RawGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RawGetRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LinkvServer).RawGet(ctx, in)
+		return srv.(MizuServer).RawGet(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Linkv_RawGet_FullMethodName,
+		FullMethod: Mizu_RawGet_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LinkvServer).RawGet(ctx, req.(*RawGetRequest))
+		return srv.(MizuServer).RawGet(ctx, req.(*RawGetRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Linkv_RawPut_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Mizu_RawPut_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RawPutRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LinkvServer).RawPut(ctx, in)
+		return srv.(MizuServer).RawPut(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Linkv_RawPut_FullMethodName,
+		FullMethod: Mizu_RawPut_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LinkvServer).RawPut(ctx, req.(*RawPutRequest))
+		return srv.(MizuServer).RawPut(ctx, req.(*RawPutRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Linkv_RawDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Mizu_RawDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RawDeleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LinkvServer).RawDelete(ctx, in)
+		return srv.(MizuServer).RawDelete(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Linkv_RawDelete_FullMethodName,
+		FullMethod: Mizu_RawDelete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LinkvServer).RawDelete(ctx, req.(*RawDeleteRequest))
+		return srv.(MizuServer).RawDelete(ctx, req.(*RawDeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Linkv_RawScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Mizu_RawScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RawScanRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(LinkvServer).RawScan(ctx, in)
+		return srv.(MizuServer).RawScan(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Linkv_RawScan_FullMethodName,
+		FullMethod: Mizu_RawScan_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LinkvServer).RawScan(ctx, req.(*RawScanRequest))
+		return srv.(MizuServer).RawScan(ctx, req.(*RawScanRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// Linkv_ServiceDesc is the grpc.ServiceDesc for Linkv service.
+// Mizu_ServiceDesc is the grpc.ServiceDesc for Mizu service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var Linkv_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "linkvpb.Linkv",
-	HandlerType: (*LinkvServer)(nil),
+var Mizu_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "mizupb.Mizu",
+	HandlerType: (*MizuServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "RawGet",
-			Handler:    _Linkv_RawGet_Handler,
+			Handler:    _Mizu_RawGet_Handler,
 		},
 		{
 			MethodName: "RawPut",
-			Handler:    _Linkv_RawPut_Handler,
+			Handler:    _Mizu_RawPut_Handler,
 		},
 		{
 			MethodName: "RawDelete",
-			Handler:    _Linkv_RawDelete_Handler,
+			Handler:    _Mizu_RawDelete_Handler,
 		},
 		{
 			MethodName: "RawScan",
-			Handler:    _Linkv_RawScan_Handler,
+			Handler:    _Mizu_RawScan_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "linkvpb/linkv.proto",
+	Metadata: "mizupb/mizu.proto",
 }

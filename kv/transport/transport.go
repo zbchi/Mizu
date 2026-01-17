@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zbchi/linkv/proto/raftpb"
+	"github.com/zbchi/mizu/proto/raftpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

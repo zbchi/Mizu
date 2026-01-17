@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/zbchi/linkv/proto"
+	"github.com/zbchi/mizu/proto"
 )
 
 // Region represents a data partition

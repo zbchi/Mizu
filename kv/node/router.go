@@ -3,7 +3,7 @@ package node
 import (
 	"sync"
 
-	"github.com/zbchi/linkv/kv/region"
+	"github.com/zbchi/mizu/kv/region"
 )
 
 // Router manages key → regionID routing for Node.

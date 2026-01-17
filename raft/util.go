@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zbchi/linkv/proto/raftpb"
+	"github.com/zbchi/mizu/proto/raftpb"
 )
 
 func min(a, b uint64) uint64 {

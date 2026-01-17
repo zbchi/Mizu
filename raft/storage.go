@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"github.com/zbchi/linkv/proto/raftpb"
+	"github.com/zbchi/mizu/proto/raftpb"
 )
 
 const MaxLogsCount = 2000

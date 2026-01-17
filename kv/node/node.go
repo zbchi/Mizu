@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/kv/raftstore"
-	"github.com/zbchi/linkv/kv/region"
-	"github.com/zbchi/linkv/kv/storage"
-	"github.com/zbchi/linkv/proto"
-	"github.com/zbchi/linkv/proto/linkvpb"
-	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/mizu/kv/raftstore"
+	"github.com/zbchi/mizu/kv/region"
+	"github.com/zbchi/mizu/kv/storage"
+	"github.com/zbchi/mizu/proto"
+	"github.com/zbchi/mizu/proto/mizupb"
+	"github.com/zbchi/mizu/proto/raftkvpb"
 )
 
 // Config represents KVNode configuration
@@ -173,7 +173,7 @@ func (kn *Node) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 		return nil
 	}
 
-	ctx := &linkvpb.Context{}
+	ctx := &mizupb.Context{}
 	var mods []storage.Modify
 
 	for _, r := range req.Requests {
@@ -227,7 +227,7 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 	}
 
 	// Read from storage
-	storageCtx := &linkvpb.Context{}
+	storageCtx := &mizupb.Context{}
 	reader, err := kn.storage.Reader(storageCtx)
 	if err != nil {
 		slog.Error("Failed to get storage reader", "error", err)

@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/dgraph-io/badger/v3"
-	"github.com/zbchi/linkv/proto/raftpb"
-	"github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/proto/raftpb"
+	"github.com/zbchi/mizu/raft"
 )
 
 func openTestDB(t *testing.T) *badger.DB {

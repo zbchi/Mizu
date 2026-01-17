@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zbchi/linkv/kv/region"
-	"github.com/zbchi/linkv/proto/raftpb"
-	"github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/kv/region"
+	"github.com/zbchi/mizu/proto/raftpb"
+	"github.com/zbchi/mizu/raft"
 )
 
 // Peer represents a region replica on this node

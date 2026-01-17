@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/raftkvpb"
 )
 
 // RaftCmd represents a Raft command with callback

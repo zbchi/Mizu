@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/linkv/proto/raftkvpb"
-	"github.com/zbchi/linkv/proto/raftpb"
-	"github.com/zbchi/linkv/raft"
+	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/raftpb"
+	"github.com/zbchi/mizu/raft"
 	protov2 "google.golang.org/protobuf/proto"
 )
 

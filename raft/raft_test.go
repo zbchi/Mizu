@@ -4,7 +4,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/zbchi/linkv/proto/raftpb"
+	"github.com/zbchi/mizu/proto/raftpb"
 )
 
 // ============================================================

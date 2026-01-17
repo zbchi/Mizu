@@ -2,9 +2,9 @@ syntax="proto3";
 
 package raftkvpb;
 
-option go_package = "github.com/zbchi/linkv/proto/raftkvpb";
+option go_package = "github.com/zbchi/mizu/proto/raftkvpb";
 
-import "linkvpb/linkv.proto";
+import "mizupb/mizu.proto";
 
 // RaftKV command types
 enum CmdType {
@@ -64,7 +64,7 @@ message PutResponse {}
 message DeleteResponse {}
 
 message ScanResponse {
-    repeated linkvpb.KvPair pairs = 1;
+    repeated mizupb.KvPair pairs = 1;
 }
 
 // RaftKV command request - combines multiple requests

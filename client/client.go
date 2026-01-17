@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/raftkvpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

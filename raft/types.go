@@ -1,6 +1,6 @@
 package raft
 
-import "github.com/zbchi/linkv/proto/raftpb"
+import "github.com/zbchi/mizu/proto/raftpb"
 
 type StateType int
 

@@ -3,20 +3,20 @@ package server
 import (
 	"context"
 
-	"github.com/zbchi/linkv/kv/storage"
-	"github.com/zbchi/linkv/proto/linkvpb"
+	"github.com/zbchi/mizu/kv/storage"
+	"github.com/zbchi/mizu/proto/mizupb"
 )
 
 type Server struct {
 	storage storage.Storage
-	linkvpb.UnimplementedLinkvServer
+	mizupb.UnimplementedMizuServer
 }
 
 func NewServer(st storage.Storage) *Server {
 	return &Server{storage: st}
 }
 
-func (s *Server) RawGet(ctx context.Context, req *linkvpb.RawGetRequest) (*linkvpb.RawGetResponse, error) {
+func (s *Server) RawGet(ctx context.Context, req *mizupb.RawGetRequest) (*mizupb.RawGetResponse, error) {
 	reader, err := s.storage.Reader(req.Context)
 	if err != nil {
 		return nil, err
@@ -28,25 +28,25 @@ func (s *Server) RawGet(ctx context.Context, req *linkvpb.RawGetRequest) (*linkv
 		return nil, err
 	}
 
-	resp := &linkvpb.RawGetResponse{Value: val}
+	resp := &mizupb.RawGetResponse{Value: val}
 	return resp, nil
 }
 
-func (s *Server) RawPut(ctx context.Context, req *linkvpb.RawPutRequest) (*linkvpb.RawPutResponse, error) {
+func (s *Server) RawPut(ctx context.Context, req *mizupb.RawPutRequest) (*mizupb.RawPutResponse, error) {
 	put := storage.Put{Key: req.Key, Value: req.Value, Cf: req.Cf}
 	mods := []storage.Modify{{Data: put}}
 	err := s.storage.Write(req.Context, mods)
-	return &linkvpb.RawPutResponse{}, err
+	return &mizupb.RawPutResponse{}, err
 }
 
-func (s *Server) RawDelete(ctx context.Context, req *linkvpb.RawDeleteRequest) (*linkvpb.RawDeleteResponse, error) {
+func (s *Server) RawDelete(ctx context.Context, req *mizupb.RawDeleteRequest) (*mizupb.RawDeleteResponse, error) {
 	del := storage.Delete{Key: req.Key, Cf: req.Cf}
 	mods := []storage.Modify{{Data: del}}
 	err := s.storage.Write(req.Context, mods)
-	return &linkvpb.RawDeleteResponse{}, err
+	return &mizupb.RawDeleteResponse{}, err
 }
 
-func (s *Server) RawScan(ctx context.Context, req *linkvpb.RawScanRequest) (*linkvpb.RawScanResponse, error) {
+func (s *Server) RawScan(ctx context.Context, req *mizupb.RawScanRequest) (*mizupb.RawScanResponse, error) {
 	reader, err := s.storage.Reader(req.Context)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (s *Server) RawScan(ctx context.Context, req *linkvpb.RawScanRequest) (*lin
 	defer iter.Close()
 
 	iter.Seek(req.StartKey)
-	kvPairs := make([]*linkvpb.KvPair, 0)
+	kvPairs := make([]*mizupb.KvPair, 0)
 
 	for ; iter.Valid() && len(kvPairs) < int(req.Limit); iter.Next() {
 		item := iter.Item()
@@ -66,7 +66,7 @@ func (s *Server) RawScan(ctx context.Context, req *linkvpb.RawScanRequest) (*lin
 		if err != nil {
 			continue
 		}
-		kvPairs = append(kvPairs, &linkvpb.KvPair{Key: key, Value: val})
+		kvPairs = append(kvPairs, &mizupb.KvPair{Key: key, Value: val})
 	}
-	return &linkvpb.RawScanResponse{Pairs: kvPairs}, nil
+	return &mizupb.RawScanResponse{Pairs: kvPairs}, nil
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/zbchi/linkv/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/raftkvpb"
 )
 
 // Server implements the RaftKV gRPC service

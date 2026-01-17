@@ -1,10 +1,10 @@
 syntax="proto3";
 
-package linkvpb;
+package mizupb;
 
-option go_package = "github.com/zbchi/linkv/proto/linkvpb";
+option go_package = "github.com/zbchi/mizu/proto/mizupb";
 
-service Linkv{
+service Mizu{
     rpc RawGet(RawGetRequest)returns(RawGetResponse);
     rpc RawPut(RawPutRequest)returns(RawPutResponse);
     rpc RawDelete(RawDeleteRequest)returns(RawDeleteResponse);
