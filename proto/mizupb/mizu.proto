@@ -12,7 +12,6 @@ service Mizu{
 }
 
 message Context{
-    
 }
 
 message RawGetRequest{

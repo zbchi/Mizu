@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
@@ -39,7 +40,7 @@ type SnapshotTrigger struct {
 
 // CommandApplier is the interface for applying raft commands to state machine
 type CommandApplier interface {
-	ApplyCommand(req *raftkvpb.RaftCmdRequest) error
+	ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error
 }
 
 // Store manages all raft peers, processes raft messages, and drives raft state machines.
@@ -123,12 +124,17 @@ func (s *Store) receiveLoop() {
 }
 
 // AddPeer adds a new peer for a region
-func (s *Store) AddPeer(reg *region.Region, peer *Peer) {
+func (s *Store) AddPeer(reg *region.Region, peer *Peer) error {
 	if err := s.regionMap.AddRegion(reg); err != nil {
 		slog.Error("Failed to add region", "region", reg.ID, "error", err)
-		return
+		return err
+	}
+	if peer == nil {
+		slog.Error("Failed to add peer", "region", reg.ID, "reason", "peer is nil")
+		return errors.New("peer is nil")
 	}
 	s.peerRouter.Register(peer)
+	return nil
 }
 
 // GetPeer returns peer by regionID
@@ -184,12 +190,14 @@ func (s *Store) runTicker() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Default to region 1 for now
-	regionID := uint64(1)
 	for {
 		select {
 		case <-ticker.C:
-			s.SendTick(regionID)
+			for _, regionID := range s.peerRouter.ListRegionIDs() {
+				if err := s.SendTick(regionID); err != nil {
+					slog.Debug("Failed to send tick", "region", regionID, "error", err)
+				}
+			}
 		case <-s.closeCh:
 			return
 		}
@@ -222,9 +230,9 @@ func (s *Store) NodeID() uint64 {
 }
 
 // ApplyCommand applies a command using the registered applier
-func (s *Store) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
+func (s *Store) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
 	if s.applier == nil {
 		return nil
 	}
-	return s.applier.ApplyCommand(req)
+	return s.applier.ApplyCommand(regionID, req)
 }

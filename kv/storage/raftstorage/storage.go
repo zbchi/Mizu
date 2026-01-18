@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/dgraph-io/badger/v3"
+	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
 	"google.golang.org/protobuf/proto"
@@ -225,12 +226,15 @@ func (s *Storage) MakeSnapshotData() []byte {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
-		for it.Rewind(); it.Valid(); it.Next() {
+		dataPrefix := storage.RegionDataPrefix(s.regionID)
+		it.Seek(dataPrefix)
+
+		for ; it.Valid(); it.Next() {
 			item := it.Item()
 			key := item.KeyCopy(nil)
 
-			if bytes.HasPrefix(key, []byte(KeyRaft)) {
-				continue
+			if !bytes.HasPrefix(key, dataPrefix) {
+				break
 			}
 			val, _ := item.ValueCopy(nil)
 			sn.Kvs = append(sn.Kvs, &raftpb.KvPair{
@@ -255,15 +259,18 @@ func (s *Storage) ApplySnapshotData(data []byte) error {
 	}
 
 	return s.db.Update(func(txn *badger.Txn) error {
-		// wipe existing user data before applying snapshot content
+		dataPrefix := storage.RegionDataPrefix(s.regionID)
+
+		// wipe existing user data for this region before applying snapshot content
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
-		for it.Rewind(); it.Valid(); it.Next() {
+		it.Seek(dataPrefix)
+		for ; it.Valid(); it.Next() {
 			item := it.Item()
 			key := item.KeyCopy(nil)
-			if bytes.HasPrefix(key, []byte(KeyRaft)) {
-				continue
+			if !bytes.HasPrefix(key, dataPrefix) {
+				break
 			}
 			if err := txn.Delete(key); err != nil {
 				return err

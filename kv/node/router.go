@@ -32,6 +32,25 @@ func (r *Router) AddRegion(region *region.Region) {
 	r.regions = append(r.regions, region)
 }
 
+func (r *Router) FindRegion(key []byte) *region.Region {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, reg := range r.regions {
+		if reg.Contains(key) {
+			return reg
+		}
+	}
+
+	return nil
+}
+
+func (r *Router) RegionCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.regions)
+}
+
 // RemoveRegion removes a region by ID from the router.
 func (r *Router) RemoveRegion(regionID uint64) {
 	r.mu.Lock()
@@ -49,14 +68,9 @@ func (r *Router) RemoveRegion(regionID uint64) {
 // It uses linear scan to find the first region where StartKey <= key < EndKey.
 // Returns 0 if no region contains the key.
 func (r *Router) Route(key []byte) uint64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	for _, reg := range r.regions {
-		if reg.Contains(key) {
-			return reg.ID
-		}
+	reg := r.FindRegion(key)
+	if reg != nil {
+		return reg.ID
 	}
-
 	return 0
 }

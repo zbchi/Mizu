@@ -100,7 +100,7 @@ func (aw *applyWorker) apply(task ApplyTask) {
 			continue
 		}
 
-		if err := aw.store.ApplyCommand(&req); err != nil {
+		if err := aw.store.ApplyCommand(task.RegionID, &req); err != nil {
 			slog.Error("applyWorker: failed to apply command", "error", err, "index", entry.Index)
 			aw.store.CallbackMgr().TriggerForRegion(task.RegionID, entry.Index, entry.Term, err)
 			task.Peer.appliedIndex = entry.Index

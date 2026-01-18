@@ -1,18 +1,12 @@
 package raftstore
 
 import (
-	"errors"
 	"log/slog"
 	"sync"
 
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
 	protov2 "google.golang.org/protobuf/proto"
-)
-
-var (
-	// ErrNotLeader is returned when a command is proposed by a follower
-	ErrNotLeader = errors.New("not leader")
 )
 
 // raftWorker is responsible for processing raft messages in batches

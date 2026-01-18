@@ -2,14 +2,13 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
 	"github.com/zbchi/mizu/kv/raftstore"
 	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/kv/storage"
-	"github.com/zbchi/mizu/proto"
-	"github.com/zbchi/mizu/proto/mizupb"
 	"github.com/zbchi/mizu/proto/raftkvpb"
 )
 
@@ -21,7 +20,7 @@ type Config struct {
 	StoragePath   string
 	ElectionTick  int
 	HeartbeatTick int
-	Peers         []proto.PeerInfo
+	Regions       []*region.Region
 }
 
 // Node represents Multi-Raft KV store node
@@ -60,27 +59,34 @@ func New(cfg *Config, storage storage.Storage) (*Node, error) {
 	return kn, nil
 }
 
-// initPeers initializes default region peer
+// initPeers initializes all configured region peers
 func (kn *Node) initPeers() error {
-	// Create default region (region 1) with full key range
-	defaultRegion := &region.Region{
-		ID:       1,
-		StartKey: []byte{},
-		EndKey:   []byte{},
-		Peers:    kn.cfg.Peers,
-		Leader:   kn.cfg.Peers[0],
+	if len(kn.cfg.Regions) == 0 {
+		return errors.New("node config requires at least one region")
 	}
 
-	// Add region to router
-	kn.router.AddRegion(defaultRegion)
+	for _, reg := range kn.cfg.Regions {
+		if reg == nil {
+			return errors.New("node config contains nil region")
+		}
+		if reg.ID == 0 {
+			slog.Error("Invalid region config", "reason", "region id must be non-zero")
+			return errors.New("region id must be non-zero")
+		}
+		if len(reg.Peers) == 0 {
+			slog.Error("Invalid region config", "region", reg.ID, "reason", "region must have at least one peer")
+			return errors.New("region must have at least one peer")
+		}
 
-	// Create peer for region 1
-	raftStorage := kn.storage.RaftStorage(defaultRegion.ID)
-	peer := raftstore.NewPeer(defaultRegion, kn.cfg.NodeID, kn.closeCh, raftStorage)
+		raftStorage := kn.storage.RaftStorage(reg.ID)
+		peer := raftstore.NewPeer(reg, kn.cfg.NodeID, kn.closeCh, raftStorage)
 
-	// Add peer to store
-	kn.store.AddPeer(defaultRegion, peer)
+		if err := kn.store.AddPeer(reg, peer); err != nil {
+			return err
+		}
 
+		kn.router.AddRegion(reg)
+	}
 	return nil
 }
 
@@ -123,6 +129,17 @@ func (kn *Node) getPeer(regionID uint64) *raftstore.Peer {
 	return kn.store.GetPeer(regionID)
 }
 
+func (kn *Node) regionForKey(key []byte) (*region.Region, error) {
+	reg := kn.router.FindRegion(key)
+	if reg != nil {
+		return reg, nil
+	}
+	if kn.router.RegionCount() == 0 {
+		return nil, raftstore.ErrRegionNotFound
+	}
+	return nil, raftstore.ErrKeyNotInRegion
+}
+
 // Put writes a command through Raft log
 func (kn *Node) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	key := req.Requests[0].Put.Key
@@ -134,16 +151,17 @@ func (kn *Node) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, er
 		Cb:      cb,
 	}
 
-	// Route key to region
-	regionID := kn.router.Route(key)
-	if regionID == 0 {
-		slog.Error("No region found for key", "key", string(key))
-		return nil, raftstore.ErrPeerNotFound
+	reg, err := kn.regionForKey(key)
+	if err != nil {
+		slog.Error("Failed to route key", "key", string(key), "error", err)
+		return nil, err
 	}
 
-	// Send command to the target region
-	if err := kn.store.SendCmd(regionID, cmd); err != nil {
+	if err := kn.store.SendCmd(reg.ID, cmd); err != nil {
 		slog.Error("Failed to send cmd", "error", err)
+		if errors.Is(err, raftstore.ErrPeerNotFound) {
+			return nil, raftstore.ErrRegionNotFound
+		}
 		return nil, err
 	}
 
@@ -168,12 +186,11 @@ func (kn *Node) CallbackMgr() *raftstore.CallbackManager {
 }
 
 // ApplyCommand applies a raft command to storage (implements CommandApplier interface)
-func (kn *Node) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
+func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
 	if len(req.Requests) == 0 {
 		return nil
 	}
 
-	ctx := &mizupb.Context{}
 	var mods []storage.Modify
 
 	for _, r := range req.Requests {
@@ -190,7 +207,7 @@ func (kn *Node) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 	}
 
 	if len(mods) > 0 {
-		return kn.storage.Write(ctx, mods)
+		return kn.storage.RegionStorage(regionID).Write(mods)
 	}
 	return nil
 }
@@ -199,24 +216,21 @@ func (kn *Node) ApplyCommand(req *raftkvpb.RaftCmdRequest) error {
 func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
 	getReq := req.Requests[0].Get
 
-	// Route key to region
-	regionID := kn.router.Route(getReq.Key)
-	if regionID == 0 {
-		slog.Error("No region found for key", "key", string(getReq.Key))
-		return nil, raftstore.ErrPeerNotFound
+	reg, err := kn.regionForKey(getReq.Key)
+	if err != nil {
+		slog.Error("Failed to route key", "key", string(getReq.Key), "error", err)
+		return nil, err
 	}
 
-	// Route to peer
-	peer := kn.getPeer(regionID)
+	peer := kn.getPeer(reg.ID)
 	if peer == nil {
-		slog.Error("Peer not found for region", "regionID", regionID)
-		return nil, raftstore.ErrNotLeader
+		slog.Error("Peer not found for region", "regionID", reg.ID)
+		return nil, raftstore.ErrRegionNotFound
 	}
 
-	// Get read index directly from peer
 	readIndex := peer.ReadIndex()
 	if readIndex == 0 {
-		slog.Error("ReadIndex failed, node is not leader", "regionID", regionID)
+		slog.Error("ReadIndex failed, node is not leader", "regionID", reg.ID)
 		return nil, raftstore.ErrNotLeader
 	}
 
@@ -227,8 +241,7 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 	}
 
 	// Read from storage
-	storageCtx := &mizupb.Context{}
-	reader, err := kn.storage.Reader(storageCtx)
+	reader, err := kn.storage.RegionStorage(reg.ID).Reader()
 	if err != nil {
 		slog.Error("Failed to get storage reader", "error", err)
 		return nil, err

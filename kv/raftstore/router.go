@@ -1,14 +1,9 @@
 package raftstore
 
 import (
-	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
-)
-
-var (
-	// ErrPeerNotFound is returned when target peer is not found
-	ErrPeerNotFound = errors.New("peer not found")
 )
 
 // PeerState contains peer state
@@ -49,6 +44,23 @@ func (pr *PeerRouter) Register(peer *Peer) {
 		closed: 0,
 	}
 	pr.peers.Store(peer.RegionID(), state)
+}
+
+// ListRegionIDs returns all registered region IDs.
+func (pr *PeerRouter) ListRegionIDs() []uint64 {
+	var regionIDs []uint64
+
+	pr.peers.Range(func(key, value interface{}) bool {
+		regionIDs = append(regionIDs, key.(uint64))
+		return true
+	})
+
+	// sort for debug and test
+	sort.Slice(regionIDs, func(i, j int) bool {
+		return regionIDs[i] < regionIDs[j]
+	})
+
+	return regionIDs
 }
 
 // Close marks the peer as closed and removes it from router

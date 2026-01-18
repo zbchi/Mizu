@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/kv/node"
+	"github.com/zbchi/mizu/kv/region"
 	standalonestorage "github.com/zbchi/mizu/kv/storage/standalone_storage"
 	"github.com/zbchi/mizu/kv/transport"
 	"github.com/zbchi/mizu/proto"
@@ -36,6 +38,11 @@ func main() {
 		slog.Error("Failed to parse peers", "error", err)
 		os.Exit(1)
 	}
+	regions, err := buildStaticRegions(peerInfos)
+	if err != nil {
+		slog.Error("Failed to build regions", "error", err)
+		os.Exit(1)
+	}
 
 	storageConf := &config.Config{DBPath: dbPathForNode(*dbPath, *id)}
 	store := standalonestorage.NewStandaloneStorage(storageConf)
@@ -52,7 +59,7 @@ func main() {
 		StoragePath:   storageConf.DBPath,
 		ElectionTick:  10,
 		HeartbeatTick: 1,
-		Peers:         peerInfos,
+		Regions:       regions,
 	}
 
 	kvNode, err := node.New(kvCfg, store)
@@ -148,4 +155,35 @@ func parsePeer(p string) (uint64, string, error) {
 
 func dbPathForNode(base string, id uint64) string {
 	return base + "-" + strconv.FormatUint(id, 10)
+}
+
+func buildStaticRegions(peers []proto.PeerInfo) ([]*region.Region, error) {
+	if len(peers) == 0 {
+		return nil, errors.New("at least one peer is required")
+	}
+
+	leader := peers[0]
+	return []*region.Region{
+		{
+			ID:       1,
+			StartKey: []byte{},
+			EndKey:   []byte("m"),
+			Peers:    peers,
+			Leader:   leader,
+		},
+		{
+			ID:       2,
+			StartKey: []byte("m"),
+			EndKey:   []byte("t"),
+			Peers:    peers,
+			Leader:   leader,
+		},
+		{
+			ID:       3,
+			StartKey: []byte("t"),
+			EndKey:   []byte{},
+			Peers:    peers,
+			Leader:   leader,
+		},
+	}, nil
 }

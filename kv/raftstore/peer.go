@@ -195,11 +195,6 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 		if appliedIndex >= req.ReadIndex {
 			slog.Info("read request ready", "appliedIndex", appliedIndex, "readIndex", req.ReadIndex)
 			close(req.Done)
-
-			waitTime := time.Since(req.AddedAt)
-			if waitTime > 100*time.Millisecond {
-				// slog.Debug("read wait duration", "duration", waitTime, "key_len", len(req.Key), "cf", req.Cf)
-			}
 		} else {
 			newQueue = append(newQueue, req)
 		}
