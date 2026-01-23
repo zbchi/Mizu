@@ -4,8 +4,6 @@ package raftkvpb;
 
 option go_package = "github.com/zbchi/mizu/proto/raftkvpb";
 
-import "mizupb/mizu.proto";
-
 // RaftKV command types
 enum CmdType {
     Invalid = 0;
@@ -63,8 +61,13 @@ message PutResponse {}
 
 message DeleteResponse {}
 
+message KvPair {
+    bytes key = 1;
+    bytes value = 2;
+}
+
 message ScanResponse {
-    repeated mizupb.KvPair pairs = 1;
+    repeated KvPair pairs = 1;
 }
 
 // RaftKV command request - combines multiple requests
