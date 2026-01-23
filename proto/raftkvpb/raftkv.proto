@@ -92,6 +92,10 @@ message ResponseHeader {
     uint64 node_id = 2;
     bool success = 3;
     string error = 4;
+    uint64 region_id = 5;
+    bytes region_start_key = 6;
+    bytes region_end_key = 7;
+    uint64 leader_node_id = 8;
 }
 
 // RaftKV service

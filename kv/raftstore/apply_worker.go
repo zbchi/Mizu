@@ -118,7 +118,8 @@ func (aw *applyWorker) apply(task ApplyTask) {
 			data := task.Peer.raftStorage.MakeSnapshotData()
 
 			aw.store.peerRouter.Send(task.RegionID, Msg{
-				Type: MsgTypeSnapshotTrigger,
+				Type:     MsgTypeSnapshotTrigger,
+				RegionID: task.RegionID,
 				Data: &SnapshotTrigger{
 					Index: task.Peer.appliedIndex,
 					Data:  data,

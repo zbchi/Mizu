@@ -114,6 +114,11 @@ func (p *Peer) ReadIndex() uint64 {
 	return p.raft.ReadIndex()
 }
 
+// LeaderNodeID returns the current known leader for this peer's raft group.
+func (p *Peer) LeaderNodeID() uint64 {
+	return p.raft.Lead()
+}
+
 // Ready returns ready state for raft
 func (p *Peer) Ready() raft.Ready {
 	return p.raft.Ready()

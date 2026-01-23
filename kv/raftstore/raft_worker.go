@@ -133,7 +133,7 @@ func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
 	data, err := protov2.Marshal(cmd.Request)
 	if err != nil {
 		slog.Error("handleRaftCmd: failed to marshal request", "error", err)
-		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), 0, 0, err)
+		cmd.Cb.Finish(rw.store.BuildResponse(cmd.Request, peer.RegionID(), nil, err), err)
 		return
 	}
 
@@ -144,7 +144,8 @@ func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
 	if !peer.Propose(data) {
 		slog.Error("handleRaftCmd: propose failed", "region", peer.RegionID())
 		rw.store.UnregisterCallback(cmd, peer.RegionID())
-		rw.store.CallbackMgr().TriggerForRegion(peer.RegionID(), 0, 0, ErrNotLeader)
+		err := ErrNotLeader
+		cmd.Cb.Finish(rw.store.BuildResponse(cmd.Request, peer.RegionID(), nil, err), err)
 		return
 	}
 

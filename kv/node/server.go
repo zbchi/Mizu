@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"errors"
-	"log/slog"
 
 	"github.com/zbchi/mizu/proto/raftkvpb"
 )
@@ -28,10 +27,11 @@ func (s *Server) Propose(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*ra
 
 	switch req.Requests[0].CmdType {
 	case raftkvpb.CmdType_Get:
-		slog.Info("command get")
 		return s.node.Get(ctx, req)
-	case raftkvpb.CmdType_Put, raftkvpb.CmdType_Delete, raftkvpb.CmdType_Scan:
-		return s.node.Put(req)
+	case raftkvpb.CmdType_Scan:
+		return s.node.Scan(ctx, req)
+	case raftkvpb.CmdType_Put, raftkvpb.CmdType_Delete:
+		return s.node.Write(req)
 	default:
 		return nil, errors.New("unknown command type")
 	}

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -49,7 +50,7 @@ func New(cfg *Config, storage storage.Storage) (*Node, error) {
 	kn.store = raftstore.NewStore(cfg.NodeID, storage, kn.closeCh)
 
 	// Initialize store with callback manager and command applier
-	kn.store.Init(kn.store, kn)
+	kn.store.Init(kn)
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
@@ -140,10 +141,12 @@ func (kn *Node) regionForKey(key []byte) (*region.Region, error) {
 	return nil, raftstore.ErrKeyNotInRegion
 }
 
-// Put writes a command through Raft log
-func (kn *Node) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	key := req.Requests[0].Put.Key
-	slog.Info("Put request received", "node", kn.cfg.NodeID, "key", string(key))
+// Write proposes a write batch through the Raft log.
+func (kn *Node) Write(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+	reg, resp := kn.routeWriteBatch(req)
+	if resp != nil {
+		return resp, nil
+	}
 
 	cb := &raftstore.Callback{Done: make(chan struct{})}
 	cmd := &raftstore.RaftCmd{
@@ -151,22 +154,18 @@ func (kn *Node) Put(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, er
 		Cb:      cb,
 	}
 
-	reg, err := kn.regionForKey(key)
-	if err != nil {
-		slog.Error("Failed to route key", "key", string(key), "error", err)
-		return nil, err
-	}
-
 	if err := kn.store.SendCmd(reg.ID, cmd); err != nil {
-		slog.Error("Failed to send cmd", "error", err)
 		if errors.Is(err, raftstore.ErrPeerNotFound) {
-			return nil, raftstore.ErrRegionNotFound
+			return kn.errorResponse(req, reg, raftstore.ErrRegionNotFound), nil
 		}
-		return nil, err
+		return kn.errorResponse(req, reg, err), nil
 	}
 
-	slog.Info("Waiting for callback...")
-	return cb.Wait()
+	resp, err := cb.Wait()
+	if err != nil && resp != nil {
+		return resp, nil
+	}
+	return resp, err
 }
 
 // NodeID returns current node ID
@@ -214,57 +213,205 @@ func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) erro
 
 // Get performs a linearizable read using ReadIndex
 func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	getReq := req.Requests[0].Get
+	readReq, resp := kn.readRequest(req, raftkvpb.CmdType_Get)
+	if resp != nil {
+		return resp, nil
+	}
 
-	reg, err := kn.regionForKey(getReq.Key)
+	reg, _, resp := kn.linearizableRead(ctx, req, readReq.Get.Key)
+	if resp != nil {
+		return resp, nil
+	}
+
+	reader, err := kn.storage.RegionStorage(reg.ID).Reader()
 	if err != nil {
-		slog.Error("Failed to route key", "key", string(getReq.Key), "error", err)
-		return nil, err
+		return kn.errorResponse(req, reg, err), nil
+	}
+	defer reader.Close()
+
+	value, err := reader.GetCF(readReq.Get.Cf, readReq.Get.Key)
+	if err != nil {
+		return kn.errorResponse(req, reg, err), nil
+	}
+
+	return kn.successResponse(req, reg, []*raftkvpb.Response{
+		{
+			CmdType: raftkvpb.CmdType_Get,
+			Get:     &raftkvpb.GetResponse{Value: value},
+		},
+	}), nil
+}
+
+// Scan performs a linearizable range scan within a single region.
+func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+	readReq, resp := kn.readRequest(req, raftkvpb.CmdType_Scan)
+	if resp != nil {
+		return resp, nil
+	}
+
+	reg, _, resp := kn.linearizableRead(ctx, req, readReq.Scan.StartKey)
+	if resp != nil {
+		return resp, nil
+	}
+
+	reader, err := kn.storage.RegionStorage(reg.ID).Reader()
+	if err != nil {
+		return kn.errorResponse(req, reg, err), nil
+	}
+	defer reader.Close()
+
+	iter := reader.IterCF(readReq.Scan.Cf)
+	defer iter.Close()
+	iter.Seek(readReq.Scan.StartKey)
+
+	limit := int(readReq.Scan.Limit)
+	if limit < 0 {
+		limit = 0
+	}
+
+	pairs := make([]*raftkvpb.KvPair, 0, limit)
+	for ; iter.Valid(); iter.Next() {
+		item := iter.Item()
+		encodedKey := item.KeyCopy(nil)
+		// RegionStorage keys are prefixed by region/CF metadata; decode also filters out
+		// entries that belong to another logical keyspace in the same Badger instance.
+		userKey, ok := storage.DecodeUserKey(reg.ID, readReq.Scan.Cf, encodedKey)
+		if !ok {
+			continue
+		}
+
+		value, err := item.ValueCopy(nil)
+		if err != nil {
+			return kn.errorResponse(req, reg, err), nil
+		}
+
+		pairs = append(pairs, &raftkvpb.KvPair{
+			Key:   userKey,
+			Value: value,
+		})
+
+		if limit > 0 && len(pairs) >= limit {
+			break
+		}
+	}
+
+	return kn.successResponse(req, reg, []*raftkvpb.Response{
+		{
+			CmdType: raftkvpb.CmdType_Scan,
+			Scan:    &raftkvpb.ScanResponse{Pairs: pairs},
+		},
+	}), nil
+}
+
+func (kn *Node) linearizableRead(ctx context.Context, req *raftkvpb.RaftCmdRequest, key []byte) (*region.Region, *raftstore.Peer, *raftkvpb.RaftCmdResponse) {
+	reg, err := kn.regionForKey(key)
+	if err != nil {
+		return nil, nil, kn.errorResponse(req, nil, err)
 	}
 
 	peer := kn.getPeer(reg.ID)
 	if peer == nil {
-		slog.Error("Peer not found for region", "regionID", reg.ID)
-		return nil, raftstore.ErrRegionNotFound
+		return reg, nil, kn.errorResponse(req, reg, raftstore.ErrRegionNotFound)
 	}
 
+	// ReadIndex only succeeds on the current leader. Waiting for appliedIndex to catch up
+	// lets the final storage read observe at least the leader's committed state.
 	readIndex := peer.ReadIndex()
 	if readIndex == 0 {
-		slog.Error("ReadIndex failed, node is not leader", "regionID", reg.ID)
-		return nil, raftstore.ErrNotLeader
+		return reg, peer, kn.errorResponse(req, reg, raftstore.ErrNotLeader)
 	}
 
-	// Wait for appliedIndex to reach readIndex
 	if err := peer.WaitForReadIndex(ctx, readIndex); err != nil {
-		slog.Error("WaitForReadIndex failed", "error", err, "readIndex", readIndex)
-		return nil, err
+		return reg, peer, kn.errorResponse(req, reg, err)
 	}
 
-	// Read from storage
-	reader, err := kn.storage.RegionStorage(reg.ID).Reader()
-	if err != nil {
-		slog.Error("Failed to get storage reader", "error", err)
-		return nil, err
-	}
-	defer reader.Close()
+	return reg, peer, nil
+}
 
-	value, err := reader.GetCF(getReq.Cf, getReq.Key)
-	if err != nil {
-		slog.Error("Failed to read from storage", "error", err, "key", string(getReq.Key))
-		return nil, err
+func (kn *Node) routeWriteBatch(req *raftkvpb.RaftCmdRequest) (*region.Region, *raftkvpb.RaftCmdResponse) {
+	if len(req.Requests) == 0 {
+		return nil, kn.errorResponse(req, nil, errors.New("empty requests"))
 	}
 
-	return &raftkvpb.RaftCmdResponse{
-		Header: &raftkvpb.ResponseHeader{
-			ClusterId: req.Header.ClusterId,
-			NodeId:    kn.NodeID(),
-			Success:   true,
-		},
-		Responses: []*raftkvpb.Response{
-			{
-				CmdType: raftkvpb.CmdType_Get,
-				Get:     &raftkvpb.GetResponse{Value: value},
-			},
-		},
-	}, nil
+	var target *region.Region
+	for idx, r := range req.Requests {
+		key, err := writeKey(r)
+		if err != nil {
+			return nil, kn.errorResponse(req, nil, err)
+		}
+
+		reg, err := kn.regionForKey(key)
+		if err != nil {
+			return nil, kn.errorResponse(req, nil, err)
+		}
+
+		if target == nil {
+			target = reg
+			continue
+		}
+
+		// The current proposal path submits one Raft command to one peer, so a write batch
+		// must stay within a single region until cross-region coordination exists.
+		if target.ID != reg.ID {
+			err := fmt.Errorf("request spans multiple regions: request %d key %q belongs to region %d [%q,%q), expected region %d [%q,%q)", idx, string(key), reg.ID, string(reg.StartKey), string(reg.EndKey), target.ID, string(target.StartKey), string(target.EndKey))
+			return nil, kn.errorResponse(req, reg, err)
+		}
+	}
+
+	return target, nil
+}
+
+func (kn *Node) readRequest(req *raftkvpb.RaftCmdRequest, expected raftkvpb.CmdType) (*raftkvpb.Request, *raftkvpb.RaftCmdResponse) {
+	if len(req.Requests) != 1 {
+		return nil, kn.errorResponse(req, nil, fmt.Errorf("%s requests must contain exactly one command", expected.String()))
+	}
+	if req.Requests[0].CmdType != expected {
+		return nil, kn.errorResponse(req, nil, fmt.Errorf("expected %s request, got %s", expected.String(), req.Requests[0].CmdType.String()))
+	}
+	return req.Requests[0], nil
+}
+
+func (kn *Node) successResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, responses []*raftkvpb.Response) *raftkvpb.RaftCmdResponse {
+	return raftstore.BuildResponse(req, kn.responseMeta(req, reg), responses, nil)
+}
+
+func (kn *Node) errorResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, err error) *raftkvpb.RaftCmdResponse {
+	return raftstore.BuildResponse(req, kn.responseMeta(req, reg), nil, err)
+}
+
+func (kn *Node) responseMeta(req *raftkvpb.RaftCmdRequest, reg *region.Region) raftstore.ResponseMeta {
+	clusterID := uint64(0)
+	if req != nil && req.Header != nil {
+		clusterID = req.Header.ClusterId
+	}
+	if reg == nil {
+		return raftstore.ResponseMeta{
+			ClusterID: clusterID,
+			NodeID:    kn.NodeID(),
+		}
+	}
+
+	meta := kn.store.ResponseMeta(clusterID, reg.ID)
+	if meta.RegionID == 0 {
+		// Fall back to static router metadata when the store cannot surface live peer state yet.
+		return raftstore.MetaFromRegion(clusterID, kn.NodeID(), reg, 0)
+	}
+	return meta
+}
+
+func writeKey(r *raftkvpb.Request) ([]byte, error) {
+	switch r.CmdType {
+	case raftkvpb.CmdType_Put:
+		if r.Put == nil {
+			return nil, errors.New("put request payload is missing")
+		}
+		return r.Put.Key, nil
+	case raftkvpb.CmdType_Delete:
+		if r.Delete == nil {
+			return nil, errors.New("delete request payload is missing")
+		}
+		return r.Delete.Key, nil
+	default:
+		return nil, fmt.Errorf("unsupported write command type %s", r.CmdType.String())
+	}
 }

@@ -76,8 +76,8 @@ func NewStore(nodeID uint64, storage RaftStorageProvider, closeCh chan struct{})
 }
 
 // Init initializes store with callback manager and command applier
-func (s *Store) Init(node PeerGetter, applier CommandApplier) {
-	s.callbackMgr = NewCallbackManager(node)
+func (s *Store) Init(applier CommandApplier) {
+	s.callbackMgr = NewCallbackManager(s)
 	s.applier = applier
 	s.raftWorker = newRaftWorker(s.peerRouter, s)
 	s.applyWorker = newApplyWorker(s)
@@ -235,4 +235,34 @@ func (s *Store) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) erro
 		return nil
 	}
 	return s.applier.ApplyCommand(regionID, req)
+}
+
+// ResponseMeta returns client-facing routing metadata for a region.
+func (s *Store) ResponseMeta(clusterID, regionID uint64) ResponseMeta {
+	meta := ResponseMeta{
+		ClusterID: clusterID,
+		NodeID:    s.nodeID,
+	}
+
+	reg := s.regionMap.GetRegionByID(regionID)
+	if reg != nil {
+		meta.RegionID = reg.ID
+		meta.RegionStart = cloneBytes(reg.StartKey)
+		meta.RegionEnd = cloneBytes(reg.EndKey)
+	}
+
+	if peer := s.GetPeer(regionID); peer != nil {
+		meta.LeaderNodeID = peer.LeaderNodeID()
+	}
+
+	return meta
+}
+
+// BuildResponse builds a response with the store's current routing metadata.
+func (s *Store) BuildResponse(req *raftkvpb.RaftCmdRequest, regionID uint64, responses []*raftkvpb.Response, err error) *raftkvpb.RaftCmdResponse {
+	clusterID := uint64(0)
+	if req != nil && req.Header != nil {
+		clusterID = req.Header.ClusterId
+	}
+	return BuildResponse(req, s.ResponseMeta(clusterID, regionID), responses, err)
 }

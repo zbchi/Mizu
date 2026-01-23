@@ -40,17 +40,23 @@ type callbackKey struct {
 	index    uint64
 }
 
+// CallbackResponseProvider provides callback bookkeeping and response metadata.
+type CallbackResponseProvider interface {
+	NextIndex(regionID uint64) uint64
+	BuildResponse(req *raftkvpb.RaftCmdRequest, regionID uint64, responses []*raftkvpb.Response, err error) *raftkvpb.RaftCmdResponse
+}
+
 // CallbackManager manages pending callbacks for client requests
 type CallbackManager struct {
-	node             interface{}
+	provider         CallbackResponseProvider
 	pendingCallbacks map[callbackKey]*RaftCmd
 	mu               sync.RWMutex
 }
 
 // NewCallbackManager creates a new CallbackManager
-func NewCallbackManager(node interface{}) *CallbackManager {
+func NewCallbackManager(provider CallbackResponseProvider) *CallbackManager {
 	return &CallbackManager{
-		node:             node,
+		provider:         provider,
 		pendingCallbacks: make(map[callbackKey]*RaftCmd),
 	}
 }
@@ -60,8 +66,8 @@ func (cm *CallbackManager) Register(cmd *RaftCmd, regionID uint64) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if pg, ok := cm.node.(PeerGetter); ok {
-		cmd.Index = pg.NextIndex(regionID)
+	if cm.provider != nil {
+		cmd.Index = cm.provider.NextIndex(regionID)
 	}
 
 	key := callbackKey{regionID: regionID, index: cmd.Index}
@@ -98,26 +104,18 @@ func (cm *CallbackManager) TriggerForRegion(regionID uint64, index uint64, term 
 
 	delete(cm.pendingCallbacks, key)
 
-	resp := &raftkvpb.RaftCmdResponse{
-		Header: &raftkvpb.ResponseHeader{
-			ClusterId: cmd.Request.Header.ClusterId,
-			Success:   err == nil,
-		},
+	var responses []*raftkvpb.Response
+	if err == nil {
+		// Mirror the original write command shape so callers receive one response entry per
+		// proposed sub-request after the log entry is applied.
+		responses = BuildWriteResponses(cmd.Request)
 	}
 
-	if err != nil {
-		resp.Header.Error = err.Error()
-	}
+	resp := cm.provider.BuildResponse(cmd.Request, regionID, responses, err)
 
 	slog.Info("Callback triggered", "region", regionID, "index", index, "success", err == nil)
 	if err != nil {
 		slog.Error("Callback triggered with error", "error", err)
 	}
 	cmd.Cb.Finish(resp, err)
-}
-
-// PeerGetter is the interface for getting a peer by region ID
-type PeerGetter interface {
-	GetPeer(regionID uint64) *Peer
-	NextIndex(regionID uint64) uint64
 }
