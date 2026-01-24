@@ -1,10 +1,9 @@
 package raftstore
 
 import (
-	"context"
 	"log/slog"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/proto/raftpb"
@@ -16,15 +15,15 @@ type Peer struct {
 	region            *region.Region
 	raft              *raft.Raft
 	raftStorage       raft.RaftStorage
-	appliedIndex      uint64
-	lastSnapshotIndex uint64
+	leaderNodeID      atomic.Uint64
+	appliedIndex      atomic.Uint64
+	lastSnapshotIndex atomic.Uint64
 
-	closeCh       chan struct{}
 	readWaitQueue *ReadWaitQueue
 }
 
 // NewPeer creates a new peer for a region
-func NewPeer(reg *region.Region, nodeID uint64, closeCh chan struct{}, raftStorage raft.RaftStorage) *Peer {
+func NewPeer(reg *region.Region, nodeID uint64, raftStorage raft.RaftStorage) *Peer {
 	peerIDs := make([]uint64, len(reg.Peers))
 	for i, p := range reg.Peers {
 		peerIDs[i] = p.NodeID
@@ -73,15 +72,16 @@ func NewPeer(reg *region.Region, nodeID uint64, closeCh chan struct{}, raftStora
 
 	// 6. Set appliedIndex with raft state machine
 	appliedIndex := raftInst.AppliedIndex()
-
-	return &Peer{
+	peer := &Peer{
 		region:        reg,
 		raft:          raftInst,
 		raftStorage:   raftStorage,
-		appliedIndex:  appliedIndex,
-		closeCh:       closeCh,
 		readWaitQueue: &ReadWaitQueue{},
 	}
+	peer.syncLeaderNodeID()
+	peer.appliedIndex.Store(appliedIndex)
+	peer.lastSnapshotIndex.Store(appliedIndex)
+	return peer
 }
 
 // RegionID returns region ID
@@ -92,16 +92,21 @@ func (p *Peer) RegionID() uint64 {
 // Tick advances raft ticker
 func (p *Peer) Tick() {
 	p.raft.Tick()
+	p.syncLeaderNodeID()
 }
 
 // Step processes a raft message
 func (p *Peer) Step(m *raftpb.Message) error {
-	return p.raft.Step(m)
+	err := p.raft.Step(m)
+	p.syncLeaderNodeID()
+	return err
 }
 
 // Propose proposes a command to raft
 func (p *Peer) Propose(data []byte) bool {
-	return p.raft.Propose(data)
+	ok := p.raft.Propose(data)
+	p.syncLeaderNodeID()
+	return ok
 }
 
 // NextIndex returns the index that will be assigned to the next proposed entry
@@ -109,14 +114,9 @@ func (p *Peer) NextIndex() uint64 {
 	return p.raft.LastIndex() + 1
 }
 
-// ReadIndex gets a read index for linearizable read
-func (p *Peer) ReadIndex() uint64 {
-	return p.raft.ReadIndex()
-}
-
-// LeaderNodeID returns the current known leader for this peer's raft group.
+// LeaderNodeID returns the latest leader hint published by the raft worker.
 func (p *Peer) LeaderNodeID() uint64 {
-	return p.raft.Lead()
+	return p.leaderNodeID.Load()
 }
 
 // Ready returns ready state for raft
@@ -132,6 +132,18 @@ func (p *Peer) HasReady() bool {
 // Advance advances raft state machine after processing ready
 func (p *Peer) Advance() {
 	p.raft.Advance()
+	p.syncLeaderNodeID()
+}
+
+// Term returns the current raft term.
+func (p *Peer) Term() uint64 {
+	return p.raft.Term()
+}
+
+// Snapshot compacts the raft log and publishes a snapshot to the raft state machine.
+func (p *Peer) Snapshot(index uint64, data []byte) {
+	p.raft.Snapshot(index, data)
+	p.syncLeaderNodeID()
 }
 
 // Stop stops the peer
@@ -141,42 +153,54 @@ func (p *Peer) Stop() {
 
 // GetAppliedIndex returns current applied index
 func (p *Peer) GetAppliedIndex() uint64 {
-	return p.appliedIndex
+	return p.appliedIndex.Load()
 }
 
-// notifyReadWaitQueue notifies read wait queue when appliedIndex advances
-func (p *Peer) notifyReadWaitQueue() {
-	p.readWaitQueue.Notify(p.appliedIndex)
+// SetAppliedIndex updates the peer's applied index after a committed entry or snapshot is applied.
+func (p *Peer) SetAppliedIndex(index uint64) {
+	p.appliedIndex.Store(index)
 }
 
-// WaitForReadIndex waits until appliedIndex reaches readIndex
-func (p *Peer) WaitForReadIndex(ctx context.Context, readIndex uint64) error {
-	slog.Info("WaitForReadIndex called", "readIndex", readIndex, "currentAppliedIndex", p.appliedIndex)
+// LastSnapshotIndex returns the index of the latest snapshot taken for this peer.
+func (p *Peer) LastSnapshotIndex() uint64 {
+	return p.lastSnapshotIndex.Load()
+}
 
-	if p.appliedIndex >= readIndex {
-		slog.Info("WaitForReadIndex condition already satisfied", "readIndex", readIndex, "appliedIndex", p.appliedIndex)
-		return nil
+// SetLastSnapshotIndex records the latest snapshot index for this peer.
+func (p *Peer) SetLastSnapshotIndex(index uint64) {
+	p.lastSnapshotIndex.Store(index)
+}
+
+// PrepareLinearizableRead is called by the raft worker to serialize ReadIndex checks
+// with the peer's raft state machine.
+func (p *Peer) PrepareLinearizableRead() ReadIndexResult {
+	leaderNodeID := p.raft.Lead()
+	p.leaderNodeID.Store(leaderNodeID)
+
+	readIndex := p.raft.ReadIndex()
+	result := ReadIndexResult{}
+	if readIndex == 0 {
+		result.Err = ErrNotLeader
+		return result
 	}
 
 	req := &ReadRequest{
 		ReadIndex: readIndex,
 		Done:      make(chan struct{}),
-		AddedAt:   time.Now(),
 	}
-	p.readWaitQueue.Add(req)
-
-	slog.Info("WaitForReadIndex added to queue", "readIndex", readIndex, "queueSize", len(p.readWaitQueue.queue))
-
-	select {
-	case <-req.Done:
-		slog.Info("WaitForReadIndex completed", "readIndex", readIndex)
-		return nil
-	case <-ctx.Done():
-		slog.Warn("WaitForReadIndex canceled by client", "readIndex", readIndex, "error", ctx.Err())
-		return ctx.Err()
-	case <-p.closeCh:
-		return nil
+	if _, queued := p.readWaitQueue.AddIfPending(req, p.GetAppliedIndex); queued {
+		result.Ready = req.Done
 	}
+	return result
+}
+
+// notifyReadWaitQueue notifies read wait queue when appliedIndex advances
+func (p *Peer) notifyReadWaitQueue() {
+	p.readWaitQueue.Notify(p.GetAppliedIndex())
+}
+
+func (p *Peer) syncLeaderNodeID() {
+	p.leaderNodeID.Store(p.raft.Lead())
 }
 
 // ReadWaitQueue manages read requests waiting for appliedIndex >= readIndex
@@ -191,14 +215,12 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 	defer q.mu.Unlock()
 
 	if len(q.queue) == 0 {
-		slog.Info("read notify queue == 0")
 		return
 	}
 
 	newQueue := make([]*ReadRequest, 0, len(q.queue))
 	for _, req := range q.queue {
 		if appliedIndex >= req.ReadIndex {
-			slog.Info("read request ready", "appliedIndex", appliedIndex, "readIndex", req.ReadIndex)
 			close(req.Done)
 		} else {
 			newQueue = append(newQueue, req)
@@ -207,18 +229,19 @@ func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
 	q.queue = newQueue
 }
 
-// Add adds a read request to the queue
-func (q *ReadWaitQueue) Add(req *ReadRequest) {
+// AddIfPending appends a read request only if appliedIndex is still behind the target.
+func (q *ReadWaitQueue) AddIfPending(req *ReadRequest, currentAppliedIndex func() uint64) (int, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if currentAppliedIndex() >= req.ReadIndex {
+		return len(q.queue), false
+	}
 	q.queue = append(q.queue, req)
+	return len(q.queue), true
 }
 
 // ReadRequest represents a pending read request waiting for apply
 type ReadRequest struct {
 	ReadIndex uint64
-	Cf        string
-	Key       []byte
 	Done      chan struct{}
-	AddedAt   time.Time
 }

@@ -16,7 +16,6 @@ type PeerState struct {
 type PeerRouter struct {
 	peers     sync.Map // regionID -> *PeerState
 	msgSender chan Msg
-	closeCh   chan struct{}
 }
 
 // NewPeerRouter creates a new PeerRouter
@@ -24,7 +23,6 @@ func NewPeerRouter() *PeerRouter {
 	return &PeerRouter{
 		peers:     sync.Map{},
 		msgSender: make(chan Msg, 4096),
-		closeCh:   make(chan struct{}),
 	}
 }
 
@@ -90,7 +88,6 @@ func (pr *PeerRouter) MsgChan() <-chan Msg {
 
 // CloseAll closes all peers and stops the router
 func (pr *PeerRouter) CloseAll() {
-	close(pr.closeCh)
 	// Delete all peers
 	pr.peers.Range(func(key, value interface{}) bool {
 		atomic.StoreUint32(&value.(*PeerState).closed, 1)

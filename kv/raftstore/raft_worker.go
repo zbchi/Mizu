@@ -15,7 +15,6 @@ type raftWorker struct {
 	store     *Store
 	transport Transport
 	msgCh     <-chan Msg
-	closeCh   chan struct{}
 	stopCh    chan struct{}
 	wg        *sync.WaitGroup
 }
@@ -23,12 +22,11 @@ type raftWorker struct {
 // newRaftWorker creates a new raftWorker
 func newRaftWorker(router *PeerRouter, store *Store) *raftWorker {
 	return &raftWorker{
-		router:  router,
-		store:   store,
-		msgCh:   router.MsgChan(),
-		closeCh: make(chan struct{}),
-		stopCh:  make(chan struct{}),
-		wg:      &sync.WaitGroup{},
+		router: router,
+		store:  store,
+		msgCh:  router.MsgChan(),
+		stopCh: make(chan struct{}),
+		wg:     &sync.WaitGroup{},
 	}
 }
 
@@ -120,6 +118,14 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg Msg) {
 	case MsgTypeSnapshotTrigger:
 		rw.handleSnapshotTrigger(peer, msg.Data)
 
+	case MsgTypeReadIndex:
+		req, ok := msg.Data.(*ReadIndexRequest)
+		if !ok {
+			slog.Warn("Invalid read-index request", "region", peer.RegionID())
+			return
+		}
+		req.Resp <- peer.PrepareLinearizableRead()
+
 	default:
 		slog.Warn("Unknown message type", "type", msg.Type, "region", peer.RegionID())
 	}
@@ -127,29 +133,23 @@ func (rw *raftWorker) handleMsg(peer *Peer, msg Msg) {
 
 // handleRaftCmd handles a raft command (client proposal)
 func (rw *raftWorker) handleRaftCmd(peer *Peer, cmd *RaftCmd) {
-	slog.Info("handleRaftCmd: processing command", "region", peer.RegionID())
-
 	// Marshal the request
 	data, err := protov2.Marshal(cmd.Request)
 	if err != nil {
-		slog.Error("handleRaftCmd: failed to marshal request", "error", err)
 		cmd.Cb.Finish(rw.store.BuildResponse(cmd.Request, peer.RegionID(), nil, err), err)
 		return
 	}
 
 	// Register callback BEFORE proposing
-	rw.store.RegisterCallback(cmd, peer.RegionID())
+	rw.store.registerCallback(cmd, peer.RegionID())
 
 	// Propose to Raft
 	if !peer.Propose(data) {
-		slog.Error("handleRaftCmd: propose failed", "region", peer.RegionID())
-		rw.store.UnregisterCallback(cmd, peer.RegionID())
+		rw.store.unregisterCallback(cmd, peer.RegionID())
 		err := ErrNotLeader
 		cmd.Cb.Finish(rw.store.BuildResponse(cmd.Request, peer.RegionID(), nil, err), err)
 		return
 	}
-
-	slog.Info("handleRaftCmd: propose succeeded", "region", peer.RegionID())
 }
 
 // handleSnapshotTrigger handles snapshot creation trigger
@@ -163,7 +163,7 @@ func (rw *raftWorker) handleSnapshotTrigger(peer *Peer, data interface{}) {
 	slog.Info("raft_worker: trigger snapshot", "region", peer.RegionID(), "index", trig.Index)
 
 	// Create snapshot object
-	term := peer.raft.Term()
+	term := peer.Term()
 	sn := &raftpb.Snapshot{
 		Term:  term,
 		Index: trig.Index,
@@ -177,7 +177,7 @@ func (rw *raftWorker) handleSnapshotTrigger(peer *Peer, data interface{}) {
 	}
 
 	// Compact the log in raft
-	peer.raft.Snapshot(trig.Index, trig.Data)
+	peer.Snapshot(trig.Index, trig.Data)
 
 	// Compact the log in storage
 	if err := peer.raftStorage.Compact(trig.Index); err != nil {
@@ -240,8 +240,6 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 
 	// 提交 snapshot + committed entries 给 apply_worker
 	if !raft.IsEmptySnap(rd.Snapshot) || len(rd.CommittedEntries) > 0 {
-		slog.Info("processReady: submitting task to applyWorker", "region", peer.RegionID(),
-			"hasSnapshot", !raft.IsEmptySnap(rd.Snapshot), "entries", len(rd.CommittedEntries))
 		rw.store.applyWorker.Submit(ApplyTask{
 			RegionID: peer.RegionID(),
 			Peer:     peer,

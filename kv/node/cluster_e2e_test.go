@@ -22,10 +22,6 @@ import (
 )
 
 type clusterNode struct {
-	id        uint64
-	kvAddr    string
-	raftAddr  string
-	dbPath    string
 	store     *standalonestorage.StandaloneStorage
 	node      *Node
 	transport *transport.Transport
@@ -150,13 +146,17 @@ func newTestCluster(t *testing.T) *testCluster {
 		baseDir:   t.TempDir(),
 	}
 
+	raftListeners := make(map[uint64]net.Listener, len(cluster.nodeIDs))
+	kvListeners := make(map[uint64]net.Listener, len(cluster.nodeIDs))
 	for _, id := range cluster.nodeIDs {
-		cluster.kvAddrs[id] = freeAddr(t)
-		cluster.raftAddrs[id] = freeAddr(t)
+		raftListeners[id] = listenLocal(t)
+		kvListeners[id] = listenLocal(t)
+		cluster.raftAddrs[id] = raftListeners[id].Addr().String()
+		cluster.kvAddrs[id] = kvListeners[id].Addr().String()
 	}
 
 	for _, id := range cluster.nodeIDs {
-		cluster.startNode(t, id)
+		cluster.startNode(t, id, raftListeners[id], kvListeners[id])
 	}
 
 	cluster.client = clientlib.New(cluster.clusterID, cluster.kvAddrs)
@@ -181,7 +181,7 @@ func (c *testCluster) close() {
 	}
 }
 
-func (c *testCluster) startNode(t *testing.T, id uint64) {
+func (c *testCluster) startNode(t *testing.T, id uint64, raftListener, kvListener net.Listener) {
 	t.Helper()
 
 	regions := buildStaticRegionsForTest(raftPeerInfos(c.raftAddrs))
@@ -198,34 +198,28 @@ func (c *testCluster) startNode(t *testing.T, id uint64) {
 	require.NoError(t, err)
 
 	trans := transport.New(transport.Config{
-		ID:    id,
-		Addr:  c.raftAddrs[id],
-		Peers: cloneAddrMap(c.raftAddrs),
+		ID:       id,
+		Addr:     c.raftAddrs[id],
+		Peers:    cloneAddrMap(c.raftAddrs),
+		Listener: raftListener,
 	})
 	require.NoError(t, trans.Start())
 
 	node.SetTransport(trans)
 	require.NoError(t, node.Start())
 
-	lis, err := net.Listen("tcp", c.kvAddrs[id])
-	require.NoError(t, err)
-
 	srv := grpc.NewServer()
 	raftkvpb.RegisterRaftKVServer(srv, NewServer(node))
 	go func() {
-		_ = srv.Serve(lis)
+		_ = srv.Serve(kvListener)
 	}()
 
 	c.nodes[id] = &clusterNode{
-		id:        id,
-		kvAddr:    c.kvAddrs[id],
-		raftAddr:  c.raftAddrs[id],
-		dbPath:    filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)),
 		store:     store,
 		node:      node,
 		transport: trans,
 		server:    srv,
-		listener:  lis,
+		listener:  kvListener,
 	}
 }
 
@@ -259,7 +253,7 @@ func (c *testCluster) stopNode(id uint64) {
 func (c *testCluster) restartNode(t *testing.T, id uint64) {
 	t.Helper()
 	c.stopNode(id)
-	c.startNode(t, id)
+	c.startNode(t, id, listenAddr(t, c.raftAddrs[id]), listenAddr(t, c.kvAddrs[id]))
 }
 
 func (c *testCluster) mustPropose(req *raftkvpb.RaftCmdRequest) *raftkvpb.RaftCmdResponse {
@@ -402,13 +396,16 @@ func singleNodePropose(addr string, req *raftkvpb.RaftCmdRequest) (*raftkvpb.Raf
 	return client.Propose(ctx, req)
 }
 
-func freeAddr(t *testing.T) string {
+func listenLocal(t *testing.T) net.Listener {
+	return listenAddr(t, "127.0.0.1:0")
+}
+
+func listenAddr(t *testing.T, addr string) net.Listener {
 	t.Helper()
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := net.Listen("tcp", addr)
 	require.NoError(t, err)
-	defer lis.Close()
-	return lis.Addr().String()
+	return lis
 }
 
 func raftPeerInfos(addrs map[uint64]string) []proto.PeerInfo {

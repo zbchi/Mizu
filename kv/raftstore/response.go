@@ -4,60 +4,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/proto/raftkvpb"
 )
 
-// ResponseMeta carries routing metadata surfaced back to clients.
-type ResponseMeta struct {
-	ClusterID    uint64
-	NodeID       uint64
-	RegionID     uint64
-	RegionStart  []byte
-	RegionEnd    []byte
-	LeaderNodeID uint64
-}
-
-func MetaFromRegion(clusterID, nodeID uint64, reg *region.Region, leaderNodeID uint64) ResponseMeta {
-	meta := ResponseMeta{
-		ClusterID:    clusterID,
-		NodeID:       nodeID,
-		LeaderNodeID: leaderNodeID,
-	}
-	if reg == nil {
-		return meta
-	}
-
-	meta.RegionID = reg.ID
-	meta.RegionStart = cloneBytes(reg.StartKey)
-	meta.RegionEnd = cloneBytes(reg.EndKey)
-	return meta
-}
-
-// BuildResponse constructs a Raft command response with routing hints.
-func BuildResponse(req *raftkvpb.RaftCmdRequest, meta ResponseMeta, responses []*raftkvpb.Response, err error) *raftkvpb.RaftCmdResponse {
-	clusterID := meta.ClusterID
-	if clusterID == 0 && req != nil && req.Header != nil {
-		clusterID = req.Header.ClusterId
-	}
-
-	return &raftkvpb.RaftCmdResponse{
-		Header: &raftkvpb.ResponseHeader{
-			ClusterId:      clusterID,
-			NodeId:         meta.NodeID,
-			Success:        err == nil,
-			Error:          humanError(err, meta),
-			RegionId:       meta.RegionID,
-			RegionStartKey: cloneBytes(meta.RegionStart),
-			RegionEndKey:   cloneBytes(meta.RegionEnd),
-			LeaderNodeId:   meta.LeaderNodeID,
-		},
-		Responses: responses,
-	}
-}
-
-// BuildWriteResponses mirrors write requests back as empty write responses.
-func BuildWriteResponses(req *raftkvpb.RaftCmdRequest) []*raftkvpb.Response {
+// buildWriteResponses mirrors write requests back as empty write responses.
+func buildWriteResponses(req *raftkvpb.RaftCmdRequest) []*raftkvpb.Response {
 	if req == nil {
 		return nil
 	}
@@ -80,7 +31,7 @@ func BuildWriteResponses(req *raftkvpb.RaftCmdRequest) []*raftkvpb.Response {
 	return responses
 }
 
-func humanError(err error, meta ResponseMeta) string {
+func responseError(err error, header *raftkvpb.ResponseHeader) string {
 	if err == nil {
 		return ""
 	}
@@ -89,23 +40,23 @@ func humanError(err error, meta ResponseMeta) string {
 	// and these messages together to decide whether to retry, reroute, or surface the error.
 	switch {
 	case errors.Is(err, ErrNotLeader):
-		if meta.RegionID == 0 {
+		if header.RegionId == 0 {
 			return "not leader"
 		}
-		if meta.LeaderNodeID != 0 {
-			return fmt.Sprintf("not leader for region %d %s; current leader is node %d", meta.RegionID, formatRegionBounds(meta.RegionStart, meta.RegionEnd), meta.LeaderNodeID)
+		if header.LeaderNodeId != 0 {
+			return fmt.Sprintf("not leader for region %d %s; current leader is node %d", header.RegionId, formatRegionBounds(header.RegionStartKey, header.RegionEndKey), header.LeaderNodeId)
 		}
-		return fmt.Sprintf("not leader for region %d %s; leader is currently unknown", meta.RegionID, formatRegionBounds(meta.RegionStart, meta.RegionEnd))
+		return fmt.Sprintf("not leader for region %d %s; leader is currently unknown", header.RegionId, formatRegionBounds(header.RegionStartKey, header.RegionEndKey))
 	case errors.Is(err, ErrRegionNotFound):
-		if meta.RegionID == 0 {
-			return fmt.Sprintf("region not found on node %d", meta.NodeID)
+		if header.RegionId == 0 {
+			return fmt.Sprintf("region not found on node %d", header.NodeId)
 		}
-		return fmt.Sprintf("region %d %s is not available on node %d", meta.RegionID, formatRegionBounds(meta.RegionStart, meta.RegionEnd), meta.NodeID)
+		return fmt.Sprintf("region %d %s is not available on node %d", header.RegionId, formatRegionBounds(header.RegionStartKey, header.RegionEndKey), header.NodeId)
 	case errors.Is(err, ErrKeyNotInRegion):
-		if meta.RegionID == 0 {
+		if header.RegionId == 0 {
 			return "key does not belong to any configured region"
 		}
-		return fmt.Sprintf("key belongs to region %d %s", meta.RegionID, formatRegionBounds(meta.RegionStart, meta.RegionEnd))
+		return fmt.Sprintf("key belongs to region %d %s", header.RegionId, formatRegionBounds(header.RegionStartKey, header.RegionEndKey))
 	default:
 		return err.Error()
 	}
@@ -122,4 +73,11 @@ func cloneBytes(src []byte) []byte {
 	dst := make([]byte, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func requestClusterID(req *raftkvpb.RaftCmdRequest) uint64 {
+	if req != nil && req.Header != nil {
+		return req.Header.ClusterId
+	}
+	return 0
 }

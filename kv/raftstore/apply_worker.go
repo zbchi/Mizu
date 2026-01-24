@@ -86,34 +86,31 @@ func (aw *applyWorker) apply(task ApplyTask) {
 	// 2. apply logs
 	for _, entry := range task.Entries {
 		if len(entry.Data) == 0 {
-			task.Peer.appliedIndex = entry.Index
+			task.Peer.SetAppliedIndex(entry.Index)
 			continue
 		}
-
-		slog.Info("applyWorker: applying entry", "region", task.RegionID, "index", entry.Index, "term", entry.Term)
 
 		var req raftkvpb.RaftCmdRequest
 		if err := protov2.Unmarshal(entry.Data, &req); err != nil {
 			slog.Error("applyWorker: failed to unmarshal request", "error", err, "index", entry.Index)
-			aw.store.CallbackMgr().TriggerForRegion(task.RegionID, entry.Index, entry.Term, err)
-			task.Peer.appliedIndex = entry.Index
+			aw.store.triggerCallback(task.RegionID, entry.Index, err)
+			task.Peer.SetAppliedIndex(entry.Index)
 			continue
 		}
 
-		if err := aw.store.ApplyCommand(task.RegionID, &req); err != nil {
+		if err := aw.store.applyCommand(task.RegionID, &req); err != nil {
 			slog.Error("applyWorker: failed to apply command", "error", err, "index", entry.Index)
-			aw.store.CallbackMgr().TriggerForRegion(task.RegionID, entry.Index, entry.Term, err)
-			task.Peer.appliedIndex = entry.Index
+			aw.store.triggerCallback(task.RegionID, entry.Index, err)
+			task.Peer.SetAppliedIndex(entry.Index)
 			continue
 		}
 
-		aw.store.CallbackMgr().TriggerForRegion(task.RegionID, entry.Index, entry.Term, nil)
-		task.Peer.appliedIndex = entry.Index
+		aw.store.triggerCallback(task.RegionID, entry.Index, nil)
+		task.Peer.SetAppliedIndex(entry.Index)
 
 		// snapshot trigger
-		if task.Peer.appliedIndex-task.Peer.lastSnapshotIndex >= SnapshotThreshold {
-			slog.Info("snapshot threshold reached", "region", task.RegionID, "index", task.Peer.appliedIndex)
-
+		appliedIndex := task.Peer.GetAppliedIndex()
+		if appliedIndex-task.Peer.LastSnapshotIndex() >= SnapshotThreshold {
 			// Get snapshot data from raftStorage
 			data := task.Peer.raftStorage.MakeSnapshotData()
 
@@ -121,12 +118,12 @@ func (aw *applyWorker) apply(task ApplyTask) {
 				Type:     MsgTypeSnapshotTrigger,
 				RegionID: task.RegionID,
 				Data: &SnapshotTrigger{
-					Index: task.Peer.appliedIndex,
+					Index: appliedIndex,
 					Data:  data,
 				},
 			})
 
-			task.Peer.lastSnapshotIndex = task.Peer.appliedIndex
+			task.Peer.SetLastSnapshotIndex(appliedIndex)
 		}
 	}
 
@@ -144,5 +141,5 @@ func (aw *applyWorker) applySnapshot(peer *Peer, sn *raftpb.Snapshot) {
 	}
 
 	// Update appliedIndex to snapshot index
-	peer.appliedIndex = sn.Index
+	peer.SetAppliedIndex(sn.Index)
 }

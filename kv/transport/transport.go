@@ -44,9 +44,10 @@ type Transport struct {
 
 // Config 是 Transport 的配置
 type Config struct {
-	ID    uint64            // 本节点 ID
-	Addr  string            // 本节点监听地址 (如 ":9000")
-	Peers map[uint64]string // peer ID -> 地址映射 (如 {1: "localhost:9001", 2: "localhost:9002"})
+	ID       uint64            // 本节点 ID
+	Addr     string            // 本节点监听地址 (如 ":9000")
+	Peers    map[uint64]string // peer ID -> 地址映射 (如 {1: "localhost:9001", 2: "localhost:9002"})
+	Listener net.Listener      // 可选：复用外部已绑定的 listener
 }
 
 // New 创建一个新的 Transport
@@ -58,25 +59,30 @@ func New(cfg Config) *Transport {
 		peers = make(map[uint64]string)
 	}
 	return &Transport{
-		id:      cfg.ID,
-		addr:    cfg.Addr,
-		peers:   peers,
-		recvC:   make(chan *raftpb.Message, 1024),
-		clients: make(map[uint64]raftpb.RaftClient),
-		conns:   make(map[uint64]*grpc.ClientConn),
-		ctx:     ctx,
-		cancel:  cancel,
+		id:       cfg.ID,
+		addr:     cfg.Addr,
+		peers:    peers,
+		recvC:    make(chan *raftpb.Message, 1024),
+		clients:  make(map[uint64]raftpb.RaftClient),
+		conns:    make(map[uint64]*grpc.ClientConn),
+		listener: cfg.Listener,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
 // Start 启动 Transport，开始监听和接收消息
 func (t *Transport) Start() error {
-	// 启动 gRPC 服务端
-	listener, err := net.Listen("tcp", t.addr)
-	if err != nil {
-		return err
+	listener := t.listener
+	if listener == nil {
+		var err error
+		listener, err = net.Listen("tcp", t.addr)
+		if err != nil {
+			return err
+		}
+		t.listener = listener
 	}
-	t.listener = listener
+	t.addr = listener.Addr().String()
 
 	t.server = grpc.NewServer()
 	raftpb.RegisterRaftServer(t.server, t)
@@ -137,6 +143,10 @@ func (t *Transport) Close() error {
 	// 关闭服务端
 	if t.server != nil {
 		t.server.GracefulStop()
+	}
+	if t.listener != nil {
+		_ = t.listener.Close()
+		t.listener = nil
 	}
 
 	close(t.recvC)

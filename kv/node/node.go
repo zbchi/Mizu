@@ -30,11 +30,8 @@ type Node struct {
 	storage   storage.Storage
 	store     *raftstore.Store
 	router    *Router
-	transport raftstore.Transport
 	closeCh   chan struct{}
 	closeOnce sync.Once
-
-	sync.RWMutex
 }
 
 // New creates a new Node
@@ -47,10 +44,7 @@ func New(cfg *Config, storage storage.Storage) (*Node, error) {
 	}
 
 	// Create store
-	kn.store = raftstore.NewStore(cfg.NodeID, storage, kn.closeCh)
-
-	// Initialize store with callback manager and command applier
-	kn.store.Init(kn)
+	kn.store = raftstore.NewStore(cfg.NodeID, storage, kn.closeCh, kn)
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
@@ -80,7 +74,7 @@ func (kn *Node) initPeers() error {
 		}
 
 		raftStorage := kn.storage.RaftStorage(reg.ID)
-		peer := raftstore.NewPeer(reg, kn.cfg.NodeID, kn.closeCh, raftStorage)
+		peer := raftstore.NewPeer(reg, kn.cfg.NodeID, raftStorage)
 
 		if err := kn.store.AddPeer(reg, peer); err != nil {
 			return err
@@ -125,11 +119,6 @@ func (kn *Node) Stop() error {
 	return nil
 }
 
-// getPeer returns peer by regionID
-func (kn *Node) getPeer(regionID uint64) *raftstore.Peer {
-	return kn.store.GetPeer(regionID)
-}
-
 func (kn *Node) regionForKey(key []byte) (*region.Region, error) {
 	reg := kn.router.FindRegion(key)
 	if reg != nil {
@@ -148,40 +137,19 @@ func (kn *Node) Write(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, 
 		return resp, nil
 	}
 
-	cb := &raftstore.Callback{Done: make(chan struct{})}
-	cmd := &raftstore.RaftCmd{
-		Request: req,
-		Cb:      cb,
-	}
-
-	if err := kn.store.SendCmd(reg.ID, cmd); err != nil {
+	resp, err := kn.store.Propose(reg.ID, req)
+	if err != nil {
 		if errors.Is(err, raftstore.ErrPeerNotFound) {
 			return kn.errorResponse(req, reg, raftstore.ErrRegionNotFound), nil
 		}
 		return kn.errorResponse(req, reg, err), nil
 	}
-
-	resp, err := cb.Wait()
-	if err != nil && resp != nil {
-		return resp, nil
-	}
-	return resp, err
-}
-
-// NodeID returns current node ID
-func (kn *Node) NodeID() uint64 {
-	return kn.cfg.NodeID
+	return resp, nil
 }
 
 // SetTransport sets the transport for network communication
 func (kn *Node) SetTransport(t raftstore.Transport) {
-	kn.transport = t
 	kn.store.SetTransport(t)
-}
-
-// CallbackMgr returns callback manager
-func (kn *Node) CallbackMgr() *raftstore.CallbackManager {
-	return kn.store.CallbackMgr()
 }
 
 // ApplyCommand applies a raft command to storage (implements CommandApplier interface)
@@ -218,7 +186,7 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 		return resp, nil
 	}
 
-	reg, _, resp := kn.linearizableRead(ctx, req, readReq.Get.Key)
+	reg, resp := kn.linearizableRead(ctx, req, readReq.Get.Key)
 	if resp != nil {
 		return resp, nil
 	}
@@ -249,7 +217,7 @@ func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkv
 		return resp, nil
 	}
 
-	reg, _, resp := kn.linearizableRead(ctx, req, readReq.Scan.StartKey)
+	reg, resp := kn.linearizableRead(ctx, req, readReq.Scan.StartKey)
 	if resp != nil {
 		return resp, nil
 	}
@@ -303,29 +271,19 @@ func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkv
 	}), nil
 }
 
-func (kn *Node) linearizableRead(ctx context.Context, req *raftkvpb.RaftCmdRequest, key []byte) (*region.Region, *raftstore.Peer, *raftkvpb.RaftCmdResponse) {
+func (kn *Node) linearizableRead(ctx context.Context, req *raftkvpb.RaftCmdRequest, key []byte) (*region.Region, *raftkvpb.RaftCmdResponse) {
 	reg, err := kn.regionForKey(key)
 	if err != nil {
-		return nil, nil, kn.errorResponse(req, nil, err)
+		return nil, kn.errorResponse(req, nil, err)
 	}
 
-	peer := kn.getPeer(reg.ID)
-	if peer == nil {
-		return reg, nil, kn.errorResponse(req, reg, raftstore.ErrRegionNotFound)
+	if err := kn.store.WaitLinearizableRead(ctx, reg.ID); err != nil {
+		if errors.Is(err, raftstore.ErrPeerNotFound) {
+			return reg, kn.errorResponse(req, reg, raftstore.ErrRegionNotFound)
+		}
+		return reg, kn.errorResponse(req, reg, err)
 	}
-
-	// ReadIndex only succeeds on the current leader. Waiting for appliedIndex to catch up
-	// lets the final storage read observe at least the leader's committed state.
-	readIndex := peer.ReadIndex()
-	if readIndex == 0 {
-		return reg, peer, kn.errorResponse(req, reg, raftstore.ErrNotLeader)
-	}
-
-	if err := peer.WaitForReadIndex(ctx, readIndex); err != nil {
-		return reg, peer, kn.errorResponse(req, reg, err)
-	}
-
-	return reg, peer, nil
+	return reg, nil
 }
 
 func (kn *Node) routeWriteBatch(req *raftkvpb.RaftCmdRequest) (*region.Region, *raftkvpb.RaftCmdResponse) {
@@ -372,31 +330,11 @@ func (kn *Node) readRequest(req *raftkvpb.RaftCmdRequest, expected raftkvpb.CmdT
 }
 
 func (kn *Node) successResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, responses []*raftkvpb.Response) *raftkvpb.RaftCmdResponse {
-	return raftstore.BuildResponse(req, kn.responseMeta(req, reg), responses, nil)
+	return kn.store.BuildResponse(req, regionID(reg), responses, nil)
 }
 
 func (kn *Node) errorResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, err error) *raftkvpb.RaftCmdResponse {
-	return raftstore.BuildResponse(req, kn.responseMeta(req, reg), nil, err)
-}
-
-func (kn *Node) responseMeta(req *raftkvpb.RaftCmdRequest, reg *region.Region) raftstore.ResponseMeta {
-	clusterID := uint64(0)
-	if req != nil && req.Header != nil {
-		clusterID = req.Header.ClusterId
-	}
-	if reg == nil {
-		return raftstore.ResponseMeta{
-			ClusterID: clusterID,
-			NodeID:    kn.NodeID(),
-		}
-	}
-
-	meta := kn.store.ResponseMeta(clusterID, reg.ID)
-	if meta.RegionID == 0 {
-		// Fall back to static router metadata when the store cannot surface live peer state yet.
-		return raftstore.MetaFromRegion(clusterID, kn.NodeID(), reg, 0)
-	}
-	return meta
+	return kn.store.BuildResponse(req, regionID(reg), nil, err)
 }
 
 func writeKey(r *raftkvpb.Request) ([]byte, error) {
@@ -414,4 +352,11 @@ func writeKey(r *raftkvpb.Request) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported write command type %s", r.CmdType.String())
 	}
+}
+
+func regionID(reg *region.Region) uint64 {
+	if reg == nil {
+		return 0
+	}
+	return reg.ID
 }

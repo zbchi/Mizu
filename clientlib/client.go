@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zbchi/mizu/kv/raftstore"
 	"github.com/zbchi/mizu/proto/raftkvpb"
@@ -143,19 +144,36 @@ func (c *Client) Propose(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*ra
 	var lastResp *raftkvpb.RaftCmdResponse
 	var lastErr error
 
-	maxAttempts := len(c.nodeIDs) * 2
-	if maxAttempts < 3 {
-		maxAttempts = 3
-	}
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return lastResp, lastErr
+			}
+			return nil, err
+		}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
 		nodeID, ok := nextCandidate(candidates, tried)
 		if !ok {
 			tried = make(map[uint64]struct{}, len(c.nodeIDs))
 			candidates = c.candidateNodeIDs(targetRegionID)
 			nodeID, ok = nextCandidate(candidates, tried)
 			if !ok {
-				break
+				if lastErr != nil {
+					return lastResp, lastErr
+				}
+				return nil, errors.New("client has no known nodes")
+			}
+
+			// Give elections and reconnects a brief chance to settle before starting another round.
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				if lastErr != nil {
+					return lastResp, lastErr
+				}
+				return nil, ctx.Err()
 			}
 		}
 
@@ -181,22 +199,15 @@ func (c *Client) Propose(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*ra
 
 		if resp.Header.LeaderNodeId != 0 {
 			targetRegionID = resp.Header.RegionId
-			if _, seen := tried[resp.Header.LeaderNodeId]; !seen {
-				// Try the hinted leader next before falling back to a full fan-out across nodes.
-				candidates = append([]uint64{resp.Header.LeaderNodeId}, candidates...)
-				continue
-			}
+			// Retry the hinted leader immediately even if it already failed earlier in this round.
+			delete(tried, resp.Header.LeaderNodeId)
+			candidates = prioritizeNode(candidates, resp.Header.LeaderNodeId)
 		}
 
 		if !retryableHeader(resp.Header) {
 			return resp, lastErr
 		}
 	}
-
-	if lastResp != nil {
-		return lastResp, lastErr
-	}
-	return nil, lastErr
 }
 
 func (c *Client) proposeToNode(ctx context.Context, nodeID uint64, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
@@ -334,6 +345,17 @@ func nextCandidate(candidates []uint64, tried map[uint64]struct{}) (uint64, bool
 	return 0, false
 }
 
+func prioritizeNode(candidates []uint64, nodeID uint64) []uint64 {
+	out := make([]uint64, 0, len(candidates)+1)
+	out = append(out, nodeID)
+	for _, id := range candidates {
+		if id != nodeID {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func contains(route regionRoute, key []byte) bool {
 	if bytes.Compare(key, route.startKey) < 0 {
 		return false
@@ -345,11 +367,12 @@ func contains(route regionRoute, key []byte) bool {
 }
 
 func cloneRequest(req *raftkvpb.RaftCmdRequest) *raftkvpb.RaftCmdRequest {
-	out := &raftkvpb.RaftCmdRequest{
-		Header: &raftkvpb.RequestHeader{},
-	}
+	out := &raftkvpb.RaftCmdRequest{}
 	if req.Header != nil {
-		*out.Header = *req.Header
+		out.Header = &raftkvpb.RequestHeader{
+			ClusterId: req.Header.GetClusterId(),
+			NodeId:    req.Header.GetNodeId(),
+		}
 	}
 
 	out.Requests = make([]*raftkvpb.Request, len(req.Requests))
