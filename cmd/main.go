@@ -11,7 +11,7 @@ import (
 	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/kv/node"
 	"github.com/zbchi/mizu/kv/region"
-	standalonestorage "github.com/zbchi/mizu/kv/storage/standalone_storage"
+	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/kv/transport"
 	"github.com/zbchi/mizu/proto"
 	"github.com/zbchi/mizu/proto/raftkvpb"
@@ -45,7 +45,7 @@ func main() {
 	}
 
 	storageConf := &config.Config{DBPath: dbPathForNode(*dbPath, *id)}
-	store := standalonestorage.NewStandaloneStorage(storageConf)
+	store := storage.NewBadgerStorage(storageConf)
 	if err := store.Start(); err != nil {
 		slog.Error("Failed to start storage", "error", err)
 		os.Exit(1)

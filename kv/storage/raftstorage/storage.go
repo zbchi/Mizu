@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	"github.com/dgraph-io/badger/v3"
-	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
 	"google.golang.org/protobuf/proto"
@@ -218,72 +217,6 @@ func (s *Storage) LoadSnapshot() (*raftpb.Snapshot, error) {
 		return nil, err
 	}
 	return &sn, err
-}
-
-func (s *Storage) MakeSnapshotData() []byte {
-	sn := &raftpb.SnapshotData{}
-	s.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-
-		dataPrefix := storage.RegionDataPrefix(s.regionID)
-		it.Seek(dataPrefix)
-
-		for ; it.Valid(); it.Next() {
-			item := it.Item()
-			key := item.KeyCopy(nil)
-
-			if !bytes.HasPrefix(key, dataPrefix) {
-				break
-			}
-			val, _ := item.ValueCopy(nil)
-			sn.Kvs = append(sn.Kvs, &raftpb.KvPair{
-				Key:   key,
-				Value: val,
-			})
-		}
-		return nil
-	})
-	data, _ := proto.Marshal(sn)
-	return data
-}
-
-func (s *Storage) ApplySnapshotData(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	var sn raftpb.SnapshotData
-	if err := proto.Unmarshal(data, &sn); err != nil {
-		return err
-	}
-
-	return s.db.Update(func(txn *badger.Txn) error {
-		dataPrefix := storage.RegionDataPrefix(s.regionID)
-
-		// wipe existing user data for this region before applying snapshot content
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-
-		it.Seek(dataPrefix)
-		for ; it.Valid(); it.Next() {
-			item := it.Item()
-			key := item.KeyCopy(nil)
-			if !bytes.HasPrefix(key, dataPrefix) {
-				break
-			}
-			if err := txn.Delete(key); err != nil {
-				return err
-			}
-		}
-
-		for _, kv := range sn.Kvs {
-			if err := txn.Set(kv.Key, kv.Value); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 func encodeHardState(st raft.HardState) []byte {

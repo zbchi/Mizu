@@ -201,23 +201,3 @@ func (t *Transport) getClient(id uint64) (raftpb.RaftClient, error) {
 
 	return client, nil
 }
-
-// AddPeer 动态添加一个 peer
-func (t *Transport) AddPeer(id uint64, addr string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.peers[id] = addr
-}
-
-// RemovePeer 动态移除一个 peer
-func (t *Transport) RemovePeer(id uint64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	delete(t.peers, id)
-	if conn, ok := t.conns[id]; ok {
-		conn.Close()
-		delete(t.conns, id)
-		delete(t.clients, id)
-	}
-}

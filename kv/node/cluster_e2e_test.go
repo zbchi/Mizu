@@ -13,7 +13,7 @@ import (
 	"github.com/zbchi/mizu/clientlib"
 	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/kv/region"
-	standalonestorage "github.com/zbchi/mizu/kv/storage/standalone_storage"
+	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/kv/transport"
 	"github.com/zbchi/mizu/proto"
 	"github.com/zbchi/mizu/proto/raftkvpb"
@@ -22,7 +22,7 @@ import (
 )
 
 type clusterNode struct {
-	store     *standalonestorage.StandaloneStorage
+	store     *storage.BadgerStorage
 	node      *Node
 	transport *transport.Transport
 	server    *grpc.Server
@@ -185,9 +185,10 @@ func (c *testCluster) startNode(t *testing.T, id uint64, raftListener, kvListene
 	t.Helper()
 
 	regions := buildStaticRegionsForTest(raftPeerInfos(c.raftAddrs))
-	store := standalonestorage.NewStandaloneStorage(&config.Config{
+	store := storage.NewBadgerStorage(&config.Config{
 		DBPath: filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)),
 	})
+	require.NoError(t, store.Start())
 
 	node, err := New(&Config{
 		NodeID:    id,
@@ -246,6 +247,7 @@ func (c *testCluster) stopNode(id uint64) {
 		n.transport = nil
 	}
 	if n.store != nil {
+		_ = n.store.Stop()
 		n.store = nil
 	}
 }

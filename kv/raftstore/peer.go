@@ -2,7 +2,6 @@ package raftstore
 
 import (
 	"log/slog"
-	"sync"
 	"sync/atomic"
 
 	"github.com/zbchi/mizu/kv/region"
@@ -89,6 +88,11 @@ func (p *Peer) RegionID() uint64 {
 	return p.region.ID
 }
 
+// Region returns the metadata owned by this peer.
+func (p *Peer) Region() *region.Region {
+	return p.region
+}
+
 // Tick advances raft ticker
 func (p *Peer) Tick() {
 	p.raft.Tick()
@@ -146,11 +150,6 @@ func (p *Peer) Snapshot(index uint64, data []byte) {
 	p.syncLeaderNodeID()
 }
 
-// Stop stops the peer
-func (p *Peer) Stop() {
-	// Raft has no explicit stop, just let it go out of scope
-}
-
 // GetAppliedIndex returns current applied index
 func (p *Peer) GetAppliedIndex() uint64 {
 	return p.appliedIndex.Load()
@@ -201,47 +200,4 @@ func (p *Peer) notifyReadWaitQueue() {
 
 func (p *Peer) syncLeaderNodeID() {
 	p.leaderNodeID.Store(p.raft.Lead())
-}
-
-// ReadWaitQueue manages read requests waiting for appliedIndex >= readIndex
-type ReadWaitQueue struct {
-	mu    sync.Mutex
-	queue []*ReadRequest
-}
-
-// Notify checks and wakes up read requests when appliedIndex advances
-func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if len(q.queue) == 0 {
-		return
-	}
-
-	newQueue := make([]*ReadRequest, 0, len(q.queue))
-	for _, req := range q.queue {
-		if appliedIndex >= req.ReadIndex {
-			close(req.Done)
-		} else {
-			newQueue = append(newQueue, req)
-		}
-	}
-	q.queue = newQueue
-}
-
-// AddIfPending appends a read request only if appliedIndex is still behind the target.
-func (q *ReadWaitQueue) AddIfPending(req *ReadRequest, currentAppliedIndex func() uint64) (int, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if currentAppliedIndex() >= req.ReadIndex {
-		return len(q.queue), false
-	}
-	q.queue = append(q.queue, req)
-	return len(q.queue), true
-}
-
-// ReadRequest represents a pending read request waiting for apply
-type ReadRequest struct {
-	ReadIndex uint64
-	Done      chan struct{}
 }

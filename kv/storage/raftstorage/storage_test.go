@@ -4,10 +4,8 @@ import (
 	"testing"
 
 	"github.com/dgraph-io/badger/v3"
-	kvstorage "github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
-	"google.golang.org/protobuf/proto"
 )
 
 func openTestDB(t *testing.T) *badger.DB {
@@ -174,104 +172,4 @@ func TestStorageIsolatesEntriesByRegion(t *testing.T) {
 	if len(got1) != 1 || got1[0].Index != 3 {
 		t.Fatalf("region 1 changed after region 2 truncate: got %+v", got1)
 	}
-}
-
-func TestSnapshotDataIsolatedByRegion(t *testing.T) {
-	db := openTestDB(t)
-
-	s1 := NewStorage(db, 1)
-	s2 := NewStorage(db, 2)
-
-	if err := db.Update(func(txn *badger.Txn) error {
-		if err := txn.Set(kvstorage.EncodeKey(1, []byte("alpha"), "default"), []byte("r1-alpha")); err != nil {
-			return err
-		}
-		if err := txn.Set(kvstorage.EncodeKey(1, []byte("beta"), "write"), []byte("r1-beta")); err != nil {
-			return err
-		}
-		if err := txn.Set(kvstorage.EncodeKey(2, []byte("alpha"), "default"), []byte("r2-alpha")); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed db: %v", err)
-	}
-
-	data := s1.MakeSnapshotData()
-	var sn raftpb.SnapshotData
-	if err := proto.Unmarshal(data, &sn); err != nil {
-		t.Fatalf("unmarshal snapshot data: %v", err)
-	}
-
-	if len(sn.Kvs) != 2 {
-		t.Fatalf("snapshot kv count = %d, want 2", len(sn.Kvs))
-	}
-	for _, kv := range sn.Kvs {
-		if got := string(kv.Key); got[:len("data/1/")] != "data/1/" {
-			t.Fatalf("snapshot contains non-region-1 key: %q", got)
-		}
-	}
-
-	if err := db.Update(func(txn *badger.Txn) error {
-		if err := txn.Set(kvstorage.EncodeKey(1, []byte("alpha"), "default"), []byte("mutated")); err != nil {
-			return err
-		}
-		if err := txn.Delete(kvstorage.EncodeKey(1, []byte("beta"), "write")); err != nil {
-			return err
-		}
-		if err := txn.Set(kvstorage.EncodeKey(2, []byte("alpha"), "default"), []byte("r2-still")); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("mutate db: %v", err)
-	}
-
-	if err := s1.ApplySnapshotData(data); err != nil {
-		t.Fatalf("apply snapshot data: %v", err)
-	}
-
-	err := db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(kvstorage.EncodeKey(1, []byte("alpha"), "default"))
-		if err != nil {
-			return err
-		}
-		val, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
-		if string(val) != "r1-alpha" {
-			t.Fatalf("region 1 alpha = %q, want %q", val, "r1-alpha")
-		}
-
-		item, err = txn.Get(kvstorage.EncodeKey(1, []byte("beta"), "write"))
-		if err != nil {
-			return err
-		}
-		val, err = item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
-		if string(val) != "r1-beta" {
-			t.Fatalf("region 1 beta = %q, want %q", val, "r1-beta")
-		}
-
-		item, err = txn.Get(kvstorage.EncodeKey(2, []byte("alpha"), "default"))
-		if err != nil {
-			return err
-		}
-		val, err = item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
-		if string(val) != "r2-still" {
-			t.Fatalf("region 2 alpha = %q, want %q", val, "r2-still")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("verify db: %v", err)
-	}
-
-	_ = s2
 }

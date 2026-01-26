@@ -2,124 +2,64 @@ package raftstore
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
-	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/proto/raftkvpb"
-	"github.com/zbchi/mizu/raft"
 )
-
-// MsgType represents the type of internal message
-type MsgType int
-
-const (
-	// MsgTypeRaftMessage is for raft messages from network
-	MsgTypeRaftMessage MsgType = iota
-	// MsgTypeRaftCmd is for client commands
-	MsgTypeRaftCmd
-	// MsgTypeTick is for raft ticker
-	MsgTypeTick
-	// MsgTypeSnapshotTrigger is for triggering snapshot creation
-	MsgTypeSnapshotTrigger
-	// MsgTypeReadIndex is for serializing linearizable read checks through the raft worker
-	MsgTypeReadIndex
-)
-
-// Msg is an internal message for routing to peers
-type Msg struct {
-	Type     MsgType
-	RegionID uint64
-	Data     interface{}
-}
-
-// SnapshotTrigger represents a trigger for snapshot creation
-type SnapshotTrigger struct {
-	Index uint64
-	Data  []byte
-}
-
-// ReadIndexRequest asks the raft worker to evaluate a linearizable read for a region.
-type ReadIndexRequest struct {
-	Resp chan ReadIndexResult
-}
-
-// ReadIndexResult contains the outcome of a serialized read-index check.
-type ReadIndexResult struct {
-	Ready <-chan struct{}
-	Err   error
-}
-
-// CommandApplier is the interface for applying raft commands to state machine
-type CommandApplier interface {
-	ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error
-}
 
 // Store manages all raft peers, processes raft messages, and drives raft state machines.
 // It encapsulates the raft layer implementation details from the KVNode.
 type Store struct {
-	peerRouter  *PeerRouter
-	callbackMgr *CallbackManager
-	raftWorker  *raftWorker
-	applyWorker *applyWorker
-	regionMap   *region.RegionMap
-	transport   Transport
-	closeCh     chan struct{}
-	nodeID      uint64
-	storage     RaftStorageProvider
-	applier     CommandApplier
-}
-
-// RaftStorageProvider provides raft storage for peers
-type RaftStorageProvider interface {
-	RaftStorage(regionID uint64) raft.RaftStorage
+	peers        *peerRegistry
+	callbackMgr  *CallbackManager
+	raftWorker   *raftWorker
+	applyWorker  *applyWorker
+	transport    Transport
+	stopCh       chan struct{}
+	stopOnce     sync.Once
+	nodeID       uint64
+	stateMachine StateMachine
 }
 
 // NewStore creates a fully initialized Store for managing raft peers.
-func NewStore(nodeID uint64, storage RaftStorageProvider, closeCh chan struct{}, applier CommandApplier) *Store {
+func NewStore(nodeID uint64, stateMachine StateMachine) *Store {
 	s := &Store{
-		nodeID:     nodeID,
-		storage:    storage,
-		regionMap:  region.NewRegionMap(),
-		closeCh:    closeCh,
-		peerRouter: NewPeerRouter(),
-		applier:    applier,
+		nodeID:       nodeID,
+		stopCh:       make(chan struct{}),
+		peers:        newPeerRegistry(),
+		stateMachine: stateMachine,
 	}
 	s.callbackMgr = NewCallbackManager(s)
-	s.raftWorker = newRaftWorker(s.peerRouter, s)
+	s.raftWorker = newRaftWorker(s.peers, s)
 	s.applyWorker = newApplyWorker(s)
 	return s
 }
 
 // Start starts the raft worker, apply worker, and ticker
 func (s *Store) Start() {
-	s.raftWorker.start(s.closeCh)
-	s.applyWorker.start()
+	s.raftWorker.start(s.stopCh)
+	s.applyWorker.start(s.stopCh)
 	go s.runTicker()
 }
 
 // Stop stops the raft worker, apply worker, and closes all peers
 func (s *Store) Stop() {
-	if s.raftWorker != nil {
-		s.raftWorker.stop()
-	}
-	if s.applyWorker != nil {
-		s.applyWorker.stop()
-	}
-	s.peerRouter.CloseAll()
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.raftWorker.wait()
+	s.applyWorker.wait()
+	s.peers.clear()
 }
 
 // SetTransport sets the transport for network communication
 func (s *Store) SetTransport(t Transport) {
 	s.transport = t
-	if s.raftWorker != nil {
-		s.raftWorker.transport = t
-	}
+	s.raftWorker.transport = t
 	go s.receiveLoop()
 }
 
-// receiveLoop receives messages from transport and forwards to peerRouter
+// receiveLoop forwards network messages to the Raft worker.
 func (s *Store) receiveLoop() {
 	recvCh := s.transport.Receive()
 	for msg := range recvCh {
@@ -128,30 +68,19 @@ func (s *Store) receiveLoop() {
 			RegionID: msg.RegionId,
 			Data:     msg,
 		}
-		s.peerRouter.Send(msg.RegionId, raftMsg)
+		if err := s.raftWorker.submit(raftMsg); err != nil {
+			slog.Debug("Failed to route raft message", "region", msg.RegionId, "error", err)
+		}
 	}
 }
 
-// AddPeer adds a new peer for a region
-func (s *Store) AddPeer(reg *region.Region, peer *Peer) error {
-	if err := s.regionMap.AddRegion(reg); err != nil {
-		slog.Error("Failed to add region", "region", reg.ID, "error", err)
-		return err
-	}
-	if peer == nil {
-		slog.Error("Failed to add peer", "region", reg.ID, "reason", "peer is nil")
-		return errors.New("peer is nil")
-	}
-	s.peerRouter.Register(peer)
-	return nil
+// AddPeer adds one region peer to the store.
+func (s *Store) AddPeer(peer *Peer) error {
+	return s.peers.register(peer)
 }
 
 func (s *Store) peer(regionID uint64) *Peer {
-	ps := s.peerRouter.Get(regionID)
-	if ps == nil {
-		return nil
-	}
-	return ps.peer
+	return s.peers.get(regionID)
 }
 
 // nextIndex returns the index that will be assigned to the next proposed entry for a region.
@@ -169,7 +98,7 @@ func (s *Store) sendTick(regionID uint64) error {
 		RegionID: regionID,
 		Data:     nil,
 	}
-	return s.peerRouter.Send(regionID, tickMsg)
+	return s.raftWorker.submit(tickMsg)
 }
 
 func (s *Store) sendCmd(regionID uint64, cmd *RaftCmd) error {
@@ -178,7 +107,7 @@ func (s *Store) sendCmd(regionID uint64, cmd *RaftCmd) error {
 		RegionID: regionID,
 		Data:     cmd,
 	}
-	return s.peerRouter.Send(regionID, cmdMsg)
+	return s.raftWorker.submit(cmdMsg)
 }
 
 func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (ReadIndexResult, error) {
@@ -188,7 +117,7 @@ func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (ReadInde
 		RegionID: regionID,
 		Data:     req,
 	}
-	if err := s.peerRouter.Send(regionID, msg); err != nil {
+	if err := s.raftWorker.submit(msg); err != nil {
 		return ReadIndexResult{}, err
 	}
 
@@ -197,7 +126,7 @@ func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (ReadInde
 		return result, nil
 	case <-ctx.Done():
 		return ReadIndexResult{}, ctx.Err()
-	case <-s.closeCh:
+	case <-s.stopCh:
 		return ReadIndexResult{}, context.Canceled
 	}
 }
@@ -236,7 +165,7 @@ func (s *Store) WaitLinearizableRead(ctx context.Context, regionID uint64) error
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-s.closeCh:
+	case <-s.stopCh:
 		return context.Canceled
 	}
 }
@@ -249,12 +178,12 @@ func (s *Store) runTicker() {
 	for {
 		select {
 		case <-ticker.C:
-			for _, regionID := range s.peerRouter.ListRegionIDs() {
+			for _, regionID := range s.peers.listRegionIDs() {
 				if err := s.sendTick(regionID); err != nil {
 					slog.Debug("Failed to send tick", "region", regionID, "error", err)
 				}
 			}
-		case <-s.closeCh:
+		case <-s.stopCh:
 			return
 		}
 	}
@@ -274,10 +203,15 @@ func (s *Store) triggerCallback(regionID, index uint64, err error) {
 
 // applyCommand applies a command using the registered applier.
 func (s *Store) applyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
-	if s.applier == nil {
-		return nil
-	}
-	return s.applier.ApplyCommand(regionID, req)
+	return s.stateMachine.ApplyCommand(regionID, req)
+}
+
+func (s *Store) createSnapshot(regionID uint64) ([]byte, error) {
+	return s.stateMachine.CreateSnapshot(regionID)
+}
+
+func (s *Store) applySnapshot(regionID uint64, data []byte) error {
+	return s.stateMachine.ApplySnapshot(regionID, data)
 }
 
 // BuildResponse builds a response with the store's current routing metadata.
@@ -288,14 +222,12 @@ func (s *Store) BuildResponse(req *raftkvpb.RaftCmdRequest, regionID uint64, res
 		Success:   err == nil,
 	}
 
-	reg := s.regionMap.GetRegionByID(regionID)
-	if reg != nil {
+	peer := s.peer(regionID)
+	if peer != nil {
+		reg := peer.Region()
 		header.RegionId = reg.ID
 		header.RegionStartKey = cloneBytes(reg.StartKey)
 		header.RegionEndKey = cloneBytes(reg.EndKey)
-	}
-
-	if peer := s.peer(regionID); peer != nil {
 		header.LeaderNodeId = peer.LeaderNodeID()
 	}
 

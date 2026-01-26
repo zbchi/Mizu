@@ -11,51 +11,52 @@ import (
 
 // raftWorker is responsible for processing raft messages in batches
 type raftWorker struct {
-	router    *PeerRouter
+	peers     *peerRegistry
 	store     *Store
 	transport Transport
-	msgCh     <-chan Msg
-	stopCh    chan struct{}
-	wg        *sync.WaitGroup
+	msgCh     chan Msg
+	wg        sync.WaitGroup
 }
 
 // newRaftWorker creates a new raftWorker
-func newRaftWorker(router *PeerRouter, store *Store) *raftWorker {
+func newRaftWorker(peers *peerRegistry, store *Store) *raftWorker {
 	return &raftWorker{
-		router: router,
-		store:  store,
-		msgCh:  router.MsgChan(),
-		stopCh: make(chan struct{}),
-		wg:     &sync.WaitGroup{},
+		peers: peers,
+		store: store,
+		msgCh: make(chan Msg, 4096),
 	}
 }
 
+func (rw *raftWorker) submit(msg Msg) error {
+	if rw.peers.get(msg.RegionID) == nil {
+		return ErrPeerNotFound
+	}
+	rw.msgCh <- msg
+	return nil
+}
+
 // start starts the raftWorker
-func (rw *raftWorker) start(closeCh <-chan struct{}) {
+func (rw *raftWorker) start(stopCh <-chan struct{}) {
 	rw.wg.Add(1)
 	go func() {
 		defer rw.wg.Done()
-		rw.run(closeCh)
+		rw.run(stopCh)
 	}()
 }
 
-// stop stops the raftWorker gracefully
-func (rw *raftWorker) stop() {
-	close(rw.stopCh)
+func (rw *raftWorker) wait() {
 	rw.wg.Wait()
 }
 
 // run runs the raft worker loop
-func (rw *raftWorker) run(closeCh <-chan struct{}) {
+func (rw *raftWorker) run(stopCh <-chan struct{}) {
 	var msgs []Msg
 	for {
 		msgs = msgs[:0]
 
 		// Wait for first message or close signal
 		select {
-		case <-closeCh:
-			return
-		case <-rw.stopCh:
+		case <-stopCh:
 			return
 		case msg := <-rw.msgCh:
 			msgs = append(msgs, msg)
@@ -75,17 +76,17 @@ func (rw *raftWorker) run(closeCh <-chan struct{}) {
 
 		// Process each peer's messages
 		for regionID, msgs := range peerMap {
-			peerState := rw.router.Get(regionID)
-			if peerState == nil {
+			peer := rw.peers.get(regionID)
+			if peer == nil {
 				slog.Debug("Peer not found", "region", regionID)
 				continue
 			}
 
 			// Process all messages for this peer
 			for _, msg := range msgs {
-				rw.handleMsg(peerState.peer, msg)
+				rw.handleMsg(peer, msg)
 				// Check and process ready after each message
-				rw.handleReady(peerState.peer)
+				rw.handleReady(peer)
 			}
 		}
 	}
@@ -209,6 +210,15 @@ func (rw *raftWorker) handleReady(peer *Peer) {
 
 // processReady processes the raft ready state for a peer
 func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
+	if err := rw.persistReady(peer, rd); err != nil {
+		return err
+	}
+	rw.sendMessages(peer, rd.Messages)
+	rw.submitApply(peer, rd)
+	return nil
+}
+
+func (rw *raftWorker) persistReady(peer *Peer, rd raft.Ready) error {
 	// Save HardState
 	if rd.HardState != nil && !rd.HardState.IsEmpty() {
 		if err := peer.raftStorage.SaveHardState(*rd.HardState); err != nil {
@@ -229,16 +239,19 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 			return err
 		}
 	}
+	return nil
+}
 
-	// Send messages
-	for _, msg := range rd.Messages {
+func (rw *raftWorker) sendMessages(peer *Peer, messages []*raftpb.Message) {
+	for _, msg := range messages {
 		msg.RegionId = peer.RegionID()
 		if rw.transport != nil {
-			rw.transport.Send(msg)
+			_ = rw.transport.Send(msg)
 		}
 	}
+}
 
-	// 提交 snapshot + committed entries 给 apply_worker
+func (rw *raftWorker) submitApply(peer *Peer, rd raft.Ready) {
 	if !raft.IsEmptySnap(rd.Snapshot) || len(rd.CommittedEntries) > 0 {
 		rw.store.applyWorker.Submit(ApplyTask{
 			RegionID: peer.RegionID(),
@@ -247,14 +260,4 @@ func (rw *raftWorker) processReady(peer *Peer, rd raft.Ready) error {
 			Entries:  rd.CommittedEntries,
 		})
 	}
-
-	return nil
-}
-
-// Transport defines the interface for sending and receiving Raft messages over network
-type Transport interface {
-	Send(msg *raftpb.Message) error
-	Start() error
-	Close() error
-	Receive() <-chan *raftpb.Message
 }

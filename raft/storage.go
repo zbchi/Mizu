@@ -18,9 +18,6 @@ type RaftStorage interface {
 
 	SaveSnapshot(sn *raftpb.Snapshot) error
 	LoadSnapshot() (*raftpb.Snapshot, error)
-
-	MakeSnapshotData() []byte
-	ApplySnapshotData(data []byte) error
 }
 
 // MemoryStorage is a simple in-memory storage for testing
@@ -180,15 +177,5 @@ func (ms *MemoryStorage) TruncateFrom(index uint64) error {
 		return nil
 	}
 	ms.ents = ms.ents[:index-1]
-	return nil
-}
-
-// ApplySnapshotData applies snapshot data (for testing)
-func (ms *MemoryStorage) ApplySnapshotData(data []byte) error {
-	return nil
-}
-
-// MakeSnapshotData creates snapshot data (for testing)
-func (ms *MemoryStorage) MakeSnapshotData() []byte {
 	return nil
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	"github.com/zbchi/mizu/kv/raftstore"
 	"github.com/zbchi/mizu/kv/region"
@@ -26,12 +25,10 @@ type Config struct {
 
 // Node represents Multi-Raft KV store node
 type Node struct {
-	cfg       *Config
-	storage   storage.Storage
-	store     *raftstore.Store
-	router    *Router
-	closeCh   chan struct{}
-	closeOnce sync.Once
+	cfg     *Config
+	storage storage.Storage
+	store   *raftstore.Store
+	router  *Router
 }
 
 // New creates a new Node
@@ -40,11 +37,10 @@ func New(cfg *Config, storage storage.Storage) (*Node, error) {
 		cfg:     cfg,
 		storage: storage,
 		router:  NewRouter(),
-		closeCh: make(chan struct{}),
 	}
 
 	// Create store
-	kn.store = raftstore.NewStore(cfg.NodeID, storage, kn.closeCh, kn)
+	kn.store = raftstore.NewStore(cfg.NodeID, kn)
 
 	// Initialize peers
 	if err := kn.initPeers(); err != nil {
@@ -76,7 +72,7 @@ func (kn *Node) initPeers() error {
 		raftStorage := kn.storage.RaftStorage(reg.ID)
 		peer := raftstore.NewPeer(reg, kn.cfg.NodeID, raftStorage)
 
-		if err := kn.store.AddPeer(reg, peer); err != nil {
+		if err := kn.store.AddPeer(peer); err != nil {
 			return err
 		}
 
@@ -88,34 +84,14 @@ func (kn *Node) initPeers() error {
 // Start starts KVNode
 func (kn *Node) Start() error {
 	slog.Info("Starting KVNode", "node", kn.cfg.NodeID)
-
-	// Start storage
-	if err := kn.storage.Start(); err != nil {
-		return err
-	}
-
-	// Start store (includes raft worker and ticker)
 	kn.store.Start()
-
 	return nil
 }
 
 // Stop stops KVNode
 func (kn *Node) Stop() error {
 	slog.Info("Stopping KVNode", "node", kn.cfg.NodeID)
-
-	kn.closeOnce.Do(func() {
-		close(kn.closeCh)
-	})
-
-	// Stop store (includes raft worker and peers)
 	kn.store.Stop()
-
-	// Stop storage
-	if kn.storage != nil {
-		return kn.storage.Stop()
-	}
-
 	return nil
 }
 
@@ -152,7 +128,7 @@ func (kn *Node) SetTransport(t raftstore.Transport) {
 	kn.store.SetTransport(t)
 }
 
-// ApplyCommand applies a raft command to storage (implements CommandApplier interface)
+// ApplyCommand applies a committed command to the region state machine.
 func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
 	if len(req.Requests) == 0 {
 		return nil
@@ -177,6 +153,16 @@ func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) erro
 		return kn.storage.RegionStorage(regionID).Write(mods)
 	}
 	return nil
+}
+
+// CreateSnapshot captures the business state of one region.
+func (kn *Node) CreateSnapshot(regionID uint64) ([]byte, error) {
+	return kn.storage.RegionStorage(regionID).CreateSnapshot()
+}
+
+// ApplySnapshot replaces the business state of one region.
+func (kn *Node) ApplySnapshot(regionID uint64, data []byte) error {
+	return kn.storage.RegionStorage(regionID).ApplySnapshot(data)
 }
 
 // Get performs a linearizable read using ReadIndex

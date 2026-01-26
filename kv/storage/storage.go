@@ -22,6 +22,8 @@ type Storage interface {
 type RegionStorage interface {
 	Reader() (StorageReader, error)
 	Write(batch []Modify) error
+	CreateSnapshot() ([]byte, error)
+	ApplySnapshot(data []byte) error
 }
 
 type StorageReader interface {

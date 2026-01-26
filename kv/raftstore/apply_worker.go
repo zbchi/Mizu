@@ -27,7 +27,6 @@ type ApplyTask struct {
 type applyWorker struct {
 	store  *Store
 	taskCh chan ApplyTask
-	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
@@ -36,30 +35,27 @@ func newApplyWorker(store *Store) *applyWorker {
 	return &applyWorker{
 		store:  store,
 		taskCh: make(chan ApplyTask, 100),
-		stopCh: make(chan struct{}),
 	}
 }
 
 // start starts the applyWorker
-func (aw *applyWorker) start() {
+func (aw *applyWorker) start(stopCh <-chan struct{}) {
 	aw.wg.Add(1)
 	go func() {
 		defer aw.wg.Done()
-		aw.run()
+		aw.run(stopCh)
 	}()
 }
 
-// stop stops the applyWorker gracefully
-func (aw *applyWorker) stop() {
-	close(aw.stopCh)
+func (aw *applyWorker) wait() {
 	aw.wg.Wait()
 }
 
 // run runs the apply worker loop
-func (aw *applyWorker) run() {
+func (aw *applyWorker) run(stopCh <-chan struct{}) {
 	for {
 		select {
-		case <-aw.stopCh:
+		case <-stopCh:
 			return
 		case task := <-aw.taskCh:
 			aw.apply(task)
@@ -111,10 +107,13 @@ func (aw *applyWorker) apply(task ApplyTask) {
 		// snapshot trigger
 		appliedIndex := task.Peer.GetAppliedIndex()
 		if appliedIndex-task.Peer.LastSnapshotIndex() >= SnapshotThreshold {
-			// Get snapshot data from raftStorage
-			data := task.Peer.raftStorage.MakeSnapshotData()
+			data, err := aw.store.createSnapshot(task.RegionID)
+			if err != nil {
+				slog.Error("applyWorker: failed to create snapshot", "region", task.RegionID, "error", err)
+				continue
+			}
 
-			aw.store.peerRouter.Send(task.RegionID, Msg{
+			_ = aw.store.raftWorker.submit(Msg{
 				Type:     MsgTypeSnapshotTrigger,
 				RegionID: task.RegionID,
 				Data: &SnapshotTrigger{
@@ -135,7 +134,7 @@ func (aw *applyWorker) apply(task ApplyTask) {
 func (aw *applyWorker) applySnapshot(peer *Peer, sn *raftpb.Snapshot) {
 	slog.Info("applyWorker: applying snapshot", "region", peer.RegionID(), "index", sn.Index, "term", sn.Term)
 
-	if err := peer.raftStorage.ApplySnapshotData(sn.Data); err != nil {
+	if err := aw.store.applySnapshot(peer.RegionID(), sn.Data); err != nil {
 		slog.Error("applyWorker: failed to apply snapshot data", "error", err, "index", sn.Index)
 		return
 	}
