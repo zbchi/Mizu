@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v3.21.12
-// source: raftkvpb/raftkv.proto
+// source: kvpb/kv.proto
 
-package raftkvpb
+package kvpb
 
 import (
 	context "context"
@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RaftKV_Propose_FullMethodName = "/raftkvpb.RaftKV/Propose"
+	RaftKV_Propose_FullMethodName = "/kvpb.RaftKV/Propose"
 )
 
 // RaftKVClient is the client API for RaftKV service.
@@ -114,7 +114,7 @@ func _RaftKV_Propose_Handler(srv interface{}, ctx context.Context, dec func(inte
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var RaftKV_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "raftkvpb.RaftKV",
+	ServiceName: "kvpb.RaftKV",
 	HandlerType: (*RaftKVServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -123,5 +123,5 @@ var RaftKV_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "raftkvpb/raftkv.proto",
+	Metadata: "kvpb/kv.proto",
 }

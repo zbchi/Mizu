@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
 	protov2 "google.golang.org/protobuf/proto"
@@ -23,7 +23,7 @@ type ApplyTask struct {
 	Entries  []*raftpb.Entry
 }
 
-// applyWorker is responsible for applying committed entries asynchronously
+// applyWorker applies committed entries to the business state machine.
 type applyWorker struct {
 	store  *Store
 	taskCh chan ApplyTask
@@ -86,7 +86,7 @@ func (aw *applyWorker) apply(task ApplyTask) {
 			continue
 		}
 
-		var req raftkvpb.RaftCmdRequest
+		var req kvpb.RaftCmdRequest
 		if err := protov2.Unmarshal(entry.Data, &req); err != nil {
 			slog.Error("applyWorker: failed to unmarshal request", "error", err, "index", entry.Index)
 			aw.store.triggerCallback(task.RegionID, entry.Index, err)

@@ -10,13 +10,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zbchi/mizu/clientlib"
-	"github.com/zbchi/mizu/kv/config"
+	"github.com/zbchi/mizu/client"
 	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/kv/transport"
-	"github.com/zbchi/mizu/proto"
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -36,7 +34,7 @@ type testCluster struct {
 	nodes     map[uint64]*clusterNode
 	kvAddrs   map[uint64]string
 	raftAddrs map[uint64]string
-	client    *clientlib.Client
+	client    *client.Client
 	baseDir   string
 }
 
@@ -159,7 +157,7 @@ func newTestCluster(t *testing.T) *testCluster {
 		cluster.startNode(t, id, raftListeners[id], kvListeners[id])
 	}
 
-	cluster.client = clientlib.New(cluster.clusterID, cluster.kvAddrs)
+	cluster.client = client.New(cluster.clusterID, cluster.kvAddrs)
 	t.Cleanup(cluster.close)
 
 	cluster.waitForLeader(t, []byte("apple"), 0)
@@ -185,15 +183,12 @@ func (c *testCluster) startNode(t *testing.T, id uint64, raftListener, kvListene
 	t.Helper()
 
 	regions := buildStaticRegionsForTest(raftPeerInfos(c.raftAddrs))
-	store := storage.NewBadgerStorage(&config.Config{
-		DBPath: filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)),
-	})
+	store := storage.NewBadgerStorage(filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)))
 	require.NoError(t, store.Start())
 
 	node, err := New(&Config{
 		NodeID:    id,
 		ClusterID: c.clusterID,
-		RaftAddr:  c.raftAddrs[id],
 		Regions:   regions,
 	}, store)
 	require.NoError(t, err)
@@ -210,7 +205,7 @@ func (c *testCluster) startNode(t *testing.T, id uint64, raftListener, kvListene
 	require.NoError(t, node.Start())
 
 	srv := grpc.NewServer()
-	raftkvpb.RegisterRaftKVServer(srv, NewServer(node))
+	kvpb.RegisterRaftKVServer(srv, NewServer(node))
 	go func() {
 		_ = srv.Serve(kvListener)
 	}()
@@ -258,7 +253,7 @@ func (c *testCluster) restartNode(t *testing.T, id uint64) {
 	c.startNode(t, id, listenAddr(t, c.raftAddrs[id]), listenAddr(t, c.kvAddrs[id]))
 }
 
-func (c *testCluster) mustPropose(req *raftkvpb.RaftCmdRequest) *raftkvpb.RaftCmdResponse {
+func (c *testCluster) mustPropose(req *kvpb.RaftCmdRequest) *kvpb.RaftCmdResponse {
 	c.t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -340,51 +335,51 @@ func (c *testCluster) waitForLocalValue(t *testing.T, nodeID, regionID uint64, k
 	}, 10*time.Second, 50*time.Millisecond)
 }
 
-func putRequest(key, value string) *raftkvpb.RaftCmdRequest {
-	return &raftkvpb.RaftCmdRequest{
-		Requests: []*raftkvpb.Request{
+func putRequest(key, value string) *kvpb.RaftCmdRequest {
+	return &kvpb.RaftCmdRequest{
+		Requests: []*kvpb.Request{
 			{
-				CmdType: raftkvpb.CmdType_Put,
-				Put:     &raftkvpb.PutRequest{Cf: "default", Key: []byte(key), Value: []byte(value)},
+				CmdType: kvpb.CmdType_Put,
+				Put:     &kvpb.PutRequest{Cf: "default", Key: []byte(key), Value: []byte(value)},
 			},
 		},
 	}
 }
 
-func getRequest(key string) *raftkvpb.RaftCmdRequest {
-	return &raftkvpb.RaftCmdRequest{
-		Requests: []*raftkvpb.Request{
+func getRequest(key string) *kvpb.RaftCmdRequest {
+	return &kvpb.RaftCmdRequest{
+		Requests: []*kvpb.Request{
 			{
-				CmdType: raftkvpb.CmdType_Get,
-				Get:     &raftkvpb.GetRequest{Cf: "default", Key: []byte(key)},
+				CmdType: kvpb.CmdType_Get,
+				Get:     &kvpb.GetRequest{Cf: "default", Key: []byte(key)},
 			},
 		},
 	}
 }
 
-func deleteRequest(key string) *raftkvpb.RaftCmdRequest {
-	return &raftkvpb.RaftCmdRequest{
-		Requests: []*raftkvpb.Request{
+func deleteRequest(key string) *kvpb.RaftCmdRequest {
+	return &kvpb.RaftCmdRequest{
+		Requests: []*kvpb.Request{
 			{
-				CmdType: raftkvpb.CmdType_Delete,
-				Delete:  &raftkvpb.DeleteRequest{Cf: "default", Key: []byte(key)},
+				CmdType: kvpb.CmdType_Delete,
+				Delete:  &kvpb.DeleteRequest{Cf: "default", Key: []byte(key)},
 			},
 		},
 	}
 }
 
-func scanRequest(startKey string, limit uint32) *raftkvpb.RaftCmdRequest {
-	return &raftkvpb.RaftCmdRequest{
-		Requests: []*raftkvpb.Request{
+func scanRequest(startKey string, limit uint32) *kvpb.RaftCmdRequest {
+	return &kvpb.RaftCmdRequest{
+		Requests: []*kvpb.Request{
 			{
-				CmdType: raftkvpb.CmdType_Scan,
-				Scan:    &raftkvpb.ScanRequest{Cf: "default", StartKey: []byte(startKey), Limit: limit},
+				CmdType: kvpb.CmdType_Scan,
+				Scan:    &kvpb.ScanRequest{Cf: "default", StartKey: []byte(startKey), Limit: limit},
 			},
 		},
 	}
 }
 
-func singleNodePropose(addr string, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func singleNodePropose(addr string, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
@@ -394,7 +389,7 @@ func singleNodePropose(addr string, req *raftkvpb.RaftCmdRequest) (*raftkvpb.Raf
 	}
 	defer conn.Close()
 
-	client := raftkvpb.NewRaftKVClient(conn)
+	client := kvpb.NewRaftKVClient(conn)
 	return client.Propose(ctx, req)
 }
 
@@ -410,21 +405,21 @@ func listenAddr(t *testing.T, addr string) net.Listener {
 	return lis
 }
 
-func raftPeerInfos(addrs map[uint64]string) []proto.PeerInfo {
+func raftPeerInfos(addrs map[uint64]string) []region.PeerInfo {
 	ids := make([]uint64, 0, len(addrs))
 	for id := range addrs {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	peers := make([]proto.PeerInfo, 0, len(ids))
+	peers := make([]region.PeerInfo, 0, len(ids))
 	for _, id := range ids {
-		peers = append(peers, proto.PeerInfo{NodeID: id, Addr: addrs[id]})
+		peers = append(peers, region.PeerInfo{NodeID: id})
 	}
 	return peers
 }
 
-func buildStaticRegionsForTest(peers []proto.PeerInfo) []*region.Region {
+func buildStaticRegionsForTest(peers []region.PeerInfo) []*region.Region {
 	regions := []*region.Region{
 		{ID: 1, StartKey: []byte{}, EndKey: []byte("m"), Peers: clonePeers(peers)},
 		{ID: 2, StartKey: []byte("m"), EndKey: []byte("t"), Peers: clonePeers(peers)},
@@ -438,8 +433,8 @@ func buildStaticRegionsForTest(peers []proto.PeerInfo) []*region.Region {
 	return regions
 }
 
-func clonePeers(peers []proto.PeerInfo) []proto.PeerInfo {
-	out := make([]proto.PeerInfo, len(peers))
+func clonePeers(peers []region.PeerInfo) []region.PeerInfo {
+	out := make([]region.PeerInfo, len(peers))
 	copy(out, peers)
 	return out
 }

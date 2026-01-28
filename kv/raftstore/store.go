@@ -2,11 +2,19 @@ package raftstore
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
+)
+
+var (
+	ErrPeerNotFound   = errors.New("peer not found")
+	ErrRegionNotFound = errors.New("region not found")
+	ErrKeyNotInRegion = errors.New("key not in region")
+	ErrNotLeader      = errors.New("not leader")
 )
 
 // Store manages all raft peers, processes raft messages, and drives raft state machines.
@@ -132,7 +140,7 @@ func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (ReadInde
 }
 
 // Propose submits one raft command to one peer and waits for its callback response.
-func (s *Store) Propose(regionID uint64, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func (s *Store) Propose(regionID uint64, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
 	cb := &Callback{Done: make(chan struct{})}
 	cmd := &RaftCmd{
 		Request: req,
@@ -202,7 +210,7 @@ func (s *Store) triggerCallback(regionID, index uint64, err error) {
 }
 
 // applyCommand applies a command using the registered applier.
-func (s *Store) applyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
+func (s *Store) applyCommand(regionID uint64, req *kvpb.RaftCmdRequest) error {
 	return s.stateMachine.ApplyCommand(regionID, req)
 }
 
@@ -215,8 +223,8 @@ func (s *Store) applySnapshot(regionID uint64, data []byte) error {
 }
 
 // BuildResponse builds a response with the store's current routing metadata.
-func (s *Store) BuildResponse(req *raftkvpb.RaftCmdRequest, regionID uint64, responses []*raftkvpb.Response, err error) *raftkvpb.RaftCmdResponse {
-	header := &raftkvpb.ResponseHeader{
+func (s *Store) BuildResponse(req *kvpb.RaftCmdRequest, regionID uint64, responses []*kvpb.Response, err error) *kvpb.RaftCmdResponse {
+	header := &kvpb.ResponseHeader{
 		ClusterId: requestClusterID(req),
 		NodeId:    s.nodeID,
 		Success:   err == nil,
@@ -232,5 +240,5 @@ func (s *Store) BuildResponse(req *raftkvpb.RaftCmdRequest, regionID uint64, res
 	}
 
 	header.Error = responseError(err, header)
-	return &raftkvpb.RaftCmdResponse{Header: header, Responses: responses}
+	return &kvpb.RaftCmdResponse{Header: header, Responses: responses}
 }

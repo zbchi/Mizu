@@ -9,18 +9,14 @@ import (
 	"github.com/zbchi/mizu/kv/raftstore"
 	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/kv/storage"
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 )
 
 // Config represents KVNode configuration
 type Config struct {
-	NodeID        uint64
-	ClusterID     uint64
-	RaftAddr      string
-	StoragePath   string
-	ElectionTick  int
-	HeartbeatTick int
-	Regions       []*region.Region
+	NodeID    uint64
+	ClusterID uint64
+	Regions   []*region.Region
 }
 
 // Node represents Multi-Raft KV store node
@@ -107,7 +103,7 @@ func (kn *Node) regionForKey(key []byte) (*region.Region, error) {
 }
 
 // Write proposes a write batch through the Raft log.
-func (kn *Node) Write(req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func (kn *Node) Write(req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
 	reg, resp := kn.routeWriteBatch(req)
 	if resp != nil {
 		return resp, nil
@@ -129,7 +125,7 @@ func (kn *Node) SetTransport(t raftstore.Transport) {
 }
 
 // ApplyCommand applies a committed command to the region state machine.
-func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) error {
+func (kn *Node) ApplyCommand(regionID uint64, req *kvpb.RaftCmdRequest) error {
 	if len(req.Requests) == 0 {
 		return nil
 	}
@@ -138,11 +134,11 @@ func (kn *Node) ApplyCommand(regionID uint64, req *raftkvpb.RaftCmdRequest) erro
 
 	for _, r := range req.Requests {
 		switch r.CmdType {
-		case raftkvpb.CmdType_Put:
+		case kvpb.CmdType_Put:
 			mods = append(mods, storage.Modify{
 				Data: storage.Put{Key: r.Put.Key, Value: r.Put.Value, Cf: r.Put.Cf},
 			})
-		case raftkvpb.CmdType_Delete:
+		case kvpb.CmdType_Delete:
 			mods = append(mods, storage.Modify{
 				Data: storage.Delete{Key: r.Delete.Key, Cf: r.Delete.Cf},
 			})
@@ -166,8 +162,8 @@ func (kn *Node) ApplySnapshot(regionID uint64, data []byte) error {
 }
 
 // Get performs a linearizable read using ReadIndex
-func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	readReq, resp := kn.readRequest(req, raftkvpb.CmdType_Get)
+func (kn *Node) Get(ctx context.Context, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
+	readReq, resp := kn.readRequest(req, kvpb.CmdType_Get)
 	if resp != nil {
 		return resp, nil
 	}
@@ -188,17 +184,17 @@ func (kn *Node) Get(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvp
 		return kn.errorResponse(req, reg, err), nil
 	}
 
-	return kn.successResponse(req, reg, []*raftkvpb.Response{
+	return kn.successResponse(req, reg, []*kvpb.Response{
 		{
-			CmdType: raftkvpb.CmdType_Get,
-			Get:     &raftkvpb.GetResponse{Value: value},
+			CmdType: kvpb.CmdType_Get,
+			Get:     &kvpb.GetResponse{Value: value},
 		},
 	}), nil
 }
 
 // Scan performs a linearizable range scan within a single region.
-func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
-	readReq, resp := kn.readRequest(req, raftkvpb.CmdType_Scan)
+func (kn *Node) Scan(ctx context.Context, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
+	readReq, resp := kn.readRequest(req, kvpb.CmdType_Scan)
 	if resp != nil {
 		return resp, nil
 	}
@@ -223,7 +219,7 @@ func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkv
 		limit = 0
 	}
 
-	pairs := make([]*raftkvpb.KvPair, 0, limit)
+	pairs := make([]*kvpb.KvPair, 0, limit)
 	for ; iter.Valid(); iter.Next() {
 		item := iter.Item()
 		encodedKey := item.KeyCopy(nil)
@@ -239,7 +235,7 @@ func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkv
 			return kn.errorResponse(req, reg, err), nil
 		}
 
-		pairs = append(pairs, &raftkvpb.KvPair{
+		pairs = append(pairs, &kvpb.KvPair{
 			Key:   userKey,
 			Value: value,
 		})
@@ -249,15 +245,15 @@ func (kn *Node) Scan(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkv
 		}
 	}
 
-	return kn.successResponse(req, reg, []*raftkvpb.Response{
+	return kn.successResponse(req, reg, []*kvpb.Response{
 		{
-			CmdType: raftkvpb.CmdType_Scan,
-			Scan:    &raftkvpb.ScanResponse{Pairs: pairs},
+			CmdType: kvpb.CmdType_Scan,
+			Scan:    &kvpb.ScanResponse{Pairs: pairs},
 		},
 	}), nil
 }
 
-func (kn *Node) linearizableRead(ctx context.Context, req *raftkvpb.RaftCmdRequest, key []byte) (*region.Region, *raftkvpb.RaftCmdResponse) {
+func (kn *Node) linearizableRead(ctx context.Context, req *kvpb.RaftCmdRequest, key []byte) (*region.Region, *kvpb.RaftCmdResponse) {
 	reg, err := kn.regionForKey(key)
 	if err != nil {
 		return nil, kn.errorResponse(req, nil, err)
@@ -272,7 +268,7 @@ func (kn *Node) linearizableRead(ctx context.Context, req *raftkvpb.RaftCmdReque
 	return reg, nil
 }
 
-func (kn *Node) routeWriteBatch(req *raftkvpb.RaftCmdRequest) (*region.Region, *raftkvpb.RaftCmdResponse) {
+func (kn *Node) routeWriteBatch(req *kvpb.RaftCmdRequest) (*region.Region, *kvpb.RaftCmdResponse) {
 	if len(req.Requests) == 0 {
 		return nil, kn.errorResponse(req, nil, errors.New("empty requests"))
 	}
@@ -305,7 +301,7 @@ func (kn *Node) routeWriteBatch(req *raftkvpb.RaftCmdRequest) (*region.Region, *
 	return target, nil
 }
 
-func (kn *Node) readRequest(req *raftkvpb.RaftCmdRequest, expected raftkvpb.CmdType) (*raftkvpb.Request, *raftkvpb.RaftCmdResponse) {
+func (kn *Node) readRequest(req *kvpb.RaftCmdRequest, expected kvpb.CmdType) (*kvpb.Request, *kvpb.RaftCmdResponse) {
 	if len(req.Requests) != 1 {
 		return nil, kn.errorResponse(req, nil, fmt.Errorf("%s requests must contain exactly one command", expected.String()))
 	}
@@ -315,22 +311,22 @@ func (kn *Node) readRequest(req *raftkvpb.RaftCmdRequest, expected raftkvpb.CmdT
 	return req.Requests[0], nil
 }
 
-func (kn *Node) successResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, responses []*raftkvpb.Response) *raftkvpb.RaftCmdResponse {
+func (kn *Node) successResponse(req *kvpb.RaftCmdRequest, reg *region.Region, responses []*kvpb.Response) *kvpb.RaftCmdResponse {
 	return kn.store.BuildResponse(req, regionID(reg), responses, nil)
 }
 
-func (kn *Node) errorResponse(req *raftkvpb.RaftCmdRequest, reg *region.Region, err error) *raftkvpb.RaftCmdResponse {
+func (kn *Node) errorResponse(req *kvpb.RaftCmdRequest, reg *region.Region, err error) *kvpb.RaftCmdResponse {
 	return kn.store.BuildResponse(req, regionID(reg), nil, err)
 }
 
-func writeKey(r *raftkvpb.Request) ([]byte, error) {
+func writeKey(r *kvpb.Request) ([]byte, error) {
 	switch r.CmdType {
-	case raftkvpb.CmdType_Put:
+	case kvpb.CmdType_Put:
 		if r.Put == nil {
 			return nil, errors.New("put request payload is missing")
 		}
 		return r.Put.Key, nil
-	case raftkvpb.CmdType_Delete:
+	case kvpb.CmdType_Delete:
 		if r.Delete == nil {
 			return nil, errors.New("delete request payload is missing")
 		}

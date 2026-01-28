@@ -3,23 +3,23 @@ package raftstore
 import (
 	"sync"
 
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 )
 
 // Callback is used to notify when a command is committed and applied.
 type Callback struct {
 	Done chan struct{}
-	resp *raftkvpb.RaftCmdResponse
+	resp *kvpb.RaftCmdResponse
 	err  error
 }
 
-func (cb *Callback) Finish(resp *raftkvpb.RaftCmdResponse, err error) {
+func (cb *Callback) Finish(resp *kvpb.RaftCmdResponse, err error) {
 	cb.resp = resp
 	cb.err = err
 	close(cb.Done)
 }
 
-func (cb *Callback) Wait() (*raftkvpb.RaftCmdResponse, error) {
+func (cb *Callback) Wait() (*kvpb.RaftCmdResponse, error) {
 	<-cb.Done
 	return cb.resp, cb.err
 }
@@ -71,7 +71,7 @@ func (cm *CallbackManager) TriggerForRegion(regionID uint64, index uint64, err e
 	}
 	delete(cm.pendingCallbacks, key)
 
-	var responses []*raftkvpb.Response
+	var responses []*kvpb.Response
 	if err == nil {
 		responses = buildWriteResponses(cmd.Request)
 	}

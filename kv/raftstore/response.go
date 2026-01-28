@@ -4,34 +4,34 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 )
 
 // buildWriteResponses mirrors write requests back as empty write responses.
-func buildWriteResponses(req *raftkvpb.RaftCmdRequest) []*raftkvpb.Response {
+func buildWriteResponses(req *kvpb.RaftCmdRequest) []*kvpb.Response {
 	if req == nil {
 		return nil
 	}
 
-	responses := make([]*raftkvpb.Response, 0, len(req.Requests))
+	responses := make([]*kvpb.Response, 0, len(req.Requests))
 	for _, r := range req.Requests {
 		switch r.CmdType {
-		case raftkvpb.CmdType_Put:
-			responses = append(responses, &raftkvpb.Response{
-				CmdType: raftkvpb.CmdType_Put,
-				Put:     &raftkvpb.PutResponse{},
+		case kvpb.CmdType_Put:
+			responses = append(responses, &kvpb.Response{
+				CmdType: kvpb.CmdType_Put,
+				Put:     &kvpb.PutResponse{},
 			})
-		case raftkvpb.CmdType_Delete:
-			responses = append(responses, &raftkvpb.Response{
-				CmdType: raftkvpb.CmdType_Delete,
-				Delete:  &raftkvpb.DeleteResponse{},
+		case kvpb.CmdType_Delete:
+			responses = append(responses, &kvpb.Response{
+				CmdType: kvpb.CmdType_Delete,
+				Delete:  &kvpb.DeleteResponse{},
 			})
 		}
 	}
 	return responses
 }
 
-func responseError(err error, header *raftkvpb.ResponseHeader) string {
+func responseError(err error, header *kvpb.ResponseHeader) string {
 	if err == nil {
 		return ""
 	}
@@ -75,7 +75,7 @@ func cloneBytes(src []byte) []byte {
 	return dst
 }
 
-func requestClusterID(req *raftkvpb.RaftCmdRequest) uint64 {
+func requestClusterID(req *kvpb.RaftCmdRequest) uint64 {
 	if req != nil && req.Header != nil {
 		return req.Header.ClusterId
 	}

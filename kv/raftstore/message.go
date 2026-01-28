@@ -1,6 +1,6 @@
 package raftstore
 
-import "github.com/zbchi/mizu/proto/raftkvpb"
+import "github.com/zbchi/mizu/proto/kvpb"
 
 type MsgType int
 
@@ -21,7 +21,7 @@ type Msg struct {
 
 // RaftCmd is a replicated business command with its completion callback.
 type RaftCmd struct {
-	Request *raftkvpb.RaftCmdRequest
+	Request *kvpb.RaftCmdRequest
 	Cb      *Callback
 	Index   uint64
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 
 	badgerdb "github.com/dgraph-io/badger/v3"
-	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/kv/storage/raftstorage"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"github.com/zbchi/mizu/raft"
@@ -16,8 +15,8 @@ type BadgerStorage struct {
 	db *badgerdb.DB
 }
 
-func NewBadgerStorage(conf *config.Config) *BadgerStorage {
-	db, err := badgerdb.Open(badgerdb.DefaultOptions(conf.DBPath))
+func NewBadgerStorage(dbPath string) *BadgerStorage {
+	db, err := badgerdb.Open(badgerdb.DefaultOptions(dbPath))
 	if err != nil {
 		panic(err)
 	}

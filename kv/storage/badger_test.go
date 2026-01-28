@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/proto/raftpb"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestBadgerStorageIsolatesUserDataByRegion(t *testing.T) {
-	store := NewBadgerStorage(&config.Config{DBPath: t.TempDir()})
+	store := NewBadgerStorage(t.TempDir())
 	defer func() {
 		if err := store.Stop(); err != nil {
 			t.Fatalf("stop storage: %v", err)
@@ -33,7 +32,7 @@ func TestBadgerStorageIsolatesUserDataByRegion(t *testing.T) {
 }
 
 func TestBadgerRegionSnapshotIsIsolated(t *testing.T) {
-	store := NewBadgerStorage(&config.Config{DBPath: t.TempDir()})
+	store := NewBadgerStorage(t.TempDir())
 	defer func() { _ = store.Stop() }()
 
 	region1 := store.RegionStorage(1)

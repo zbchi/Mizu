@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 )
 
 // Server implements the RaftKV gRPC service
 type Server struct {
-	raftkvpb.UnimplementedRaftKVServer
+	kvpb.UnimplementedRaftKVServer
 	node *Node
 }
 
@@ -20,17 +20,17 @@ func NewServer(node *Node) *Server {
 	}
 }
 
-func (s *Server) Propose(ctx context.Context, req *raftkvpb.RaftCmdRequest) (*raftkvpb.RaftCmdResponse, error) {
+func (s *Server) Propose(ctx context.Context, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
 	if len(req.Requests) == 0 {
 		return nil, errors.New("empty requests")
 	}
 
 	switch req.Requests[0].CmdType {
-	case raftkvpb.CmdType_Get:
+	case kvpb.CmdType_Get:
 		return s.node.Get(ctx, req)
-	case raftkvpb.CmdType_Scan:
+	case kvpb.CmdType_Scan:
 		return s.node.Scan(ctx, req)
-	case raftkvpb.CmdType_Put, raftkvpb.CmdType_Delete:
+	case kvpb.CmdType_Put, kvpb.CmdType_Delete:
 		return s.node.Write(req)
 	default:
 		return nil, errors.New("unknown command type")

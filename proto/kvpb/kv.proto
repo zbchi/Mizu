@@ -1,8 +1,8 @@
 syntax="proto3";
 
-package raftkvpb;
+package kvpb;
 
-option go_package = "github.com/zbchi/mizu/proto/raftkvpb";
+option go_package = "github.com/zbchi/mizu/proto/kvpb";
 
 // RaftKV command types
 enum CmdType {

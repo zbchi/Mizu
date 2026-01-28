@@ -2,17 +2,20 @@ package region
 
 import (
 	"bytes"
-
-	"github.com/zbchi/mizu/proto"
 )
+
+// PeerInfo identifies one node participating in a region's Raft group.
+type PeerInfo struct {
+	NodeID uint64
+}
 
 // Region represents a data partition.
 type Region struct {
 	ID       uint64
 	StartKey []byte
 	EndKey   []byte
-	Peers    []proto.PeerInfo
-	Leader   proto.PeerInfo
+	Peers    []PeerInfo
+	Leader   PeerInfo
 }
 
 // Contains reports whether key belongs to the half-open region range.

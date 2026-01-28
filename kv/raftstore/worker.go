@@ -9,7 +9,7 @@ import (
 	protov2 "google.golang.org/protobuf/proto"
 )
 
-// raftWorker is responsible for processing raft messages in batches
+// raftWorker serializes messages for all local Raft peers.
 type raftWorker struct {
 	peers     *peerRegistry
 	store     *Store

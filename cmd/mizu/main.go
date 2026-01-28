@@ -1,3 +1,4 @@
+// Command mizu runs a distributed KV node.
 package main
 
 import (
@@ -8,13 +9,11 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/zbchi/mizu/kv/config"
 	"github.com/zbchi/mizu/kv/node"
 	"github.com/zbchi/mizu/kv/region"
 	"github.com/zbchi/mizu/kv/storage"
 	"github.com/zbchi/mizu/kv/transport"
-	"github.com/zbchi/mizu/proto"
-	"github.com/zbchi/mizu/proto/raftkvpb"
+	"github.com/zbchi/mizu/proto/kvpb"
 
 	"google.golang.org/grpc"
 )
@@ -44,8 +43,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	storageConf := &config.Config{DBPath: dbPathForNode(*dbPath, *id)}
-	store := storage.NewBadgerStorage(storageConf)
+	storagePath := dbPathForNode(*dbPath, *id)
+	store := storage.NewBadgerStorage(storagePath)
 	if err := store.Start(); err != nil {
 		slog.Error("Failed to start storage", "error", err)
 		os.Exit(1)
@@ -53,13 +52,9 @@ func main() {
 	defer store.Stop()
 
 	kvCfg := &node.Config{
-		NodeID:        *id,
-		ClusterID:     *clusterID,
-		RaftAddr:      *raftAddr,
-		StoragePath:   storageConf.DBPath,
-		ElectionTick:  10,
-		HeartbeatTick: 1,
-		Regions:       regions,
+		NodeID:    *id,
+		ClusterID: *clusterID,
+		Regions:   regions,
 	}
 
 	kvNode, err := node.New(kvCfg, store)
@@ -90,7 +85,7 @@ func main() {
 
 	srv := grpc.NewServer()
 	raftKVServer := node.NewServer(kvNode)
-	raftkvpb.RegisterRaftKVServer(srv, raftKVServer)
+	kvpb.RegisterRaftKVServer(srv, raftKVServer)
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
@@ -105,8 +100,8 @@ func main() {
 	}
 }
 
-func parsePeers(peersStr string) ([]proto.PeerInfo, map[uint64]string, error) {
-	var peerInfos []proto.PeerInfo
+func parsePeers(peersStr string) ([]region.PeerInfo, map[uint64]string, error) {
+	var peerInfos []region.PeerInfo
 	raftPeers := make(map[uint64]string)
 
 	for _, p := range splitPeers(peersStr) {
@@ -114,7 +109,7 @@ func parsePeers(peersStr string) ([]proto.PeerInfo, map[uint64]string, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		peerInfos = append(peerInfos, proto.PeerInfo{NodeID: id, Addr: addr})
+		peerInfos = append(peerInfos, region.PeerInfo{NodeID: id})
 		raftPeers[id] = addr
 	}
 
@@ -157,7 +152,7 @@ func dbPathForNode(base string, id uint64) string {
 	return base + "-" + strconv.FormatUint(id, 10)
 }
 
-func buildStaticRegions(peers []proto.PeerInfo) ([]*region.Region, error) {
+func buildStaticRegions(peers []region.PeerInfo) ([]*region.Region, error) {
 	if len(peers) == 0 {
 		return nil, errors.New("at least one peer is required")
 	}
