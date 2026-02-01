@@ -9,26 +9,13 @@ type RaftLog struct {
 
 	// offset 是 entries[0] 的索引（快照后会增加）
 	offset uint64
-
-	// appliedIndex 是已应用到状态机的最高索引
-	appliedIndex uint64
 }
 
 // NewRaftLog 创建一个新的 RaftLog
 func NewRaftLog() *RaftLog {
 	return &RaftLog{
-		entries:      []*raftpb.Entry{{Term: 0, Index: 0}}, // 哨兵
-		offset:       0,
-		appliedIndex: 0,
-	}
-}
-
-// NewRaftLogFromSnapshot 从快照创建 RaftLog
-func NewRaftLogFromSnapshot(snapIndex, snapTerm uint64) *RaftLog {
-	return &RaftLog{
-		entries:      []*raftpb.Entry{{Term: snapTerm, Index: snapIndex}},
-		offset:       snapIndex,
-		appliedIndex: snapIndex,
+		entries: []*raftpb.Entry{{Term: 0, Index: 0}}, // 哨兵
+		offset:  0,
 	}
 }
 
@@ -150,15 +137,4 @@ func (l *RaftLog) CompactTo(index, term uint64) {
 func (l *RaftLog) Restore(snapIndex, snapTerm uint64) {
 	l.offset = snapIndex
 	l.entries = []*raftpb.Entry{{Term: snapTerm, Index: snapIndex}}
-	l.appliedIndex = snapIndex
-}
-
-// AppliedIndex 返回已应用索引
-func (l *RaftLog) AppliedIndex() uint64 {
-	return l.appliedIndex
-}
-
-// SetAppliedIndex 设置已应用索引
-func (l *RaftLog) SetAppliedIndex(index uint64) {
-	l.appliedIndex = index
 }

@@ -35,6 +35,10 @@ message Message{
     uint64 rejectHint=10;
     uint64 region_id=12;
 
+    // read_id correlates a leader's ReadIndex probe with follower responses.
+    // Zero means the message is not part of a ReadIndex round.
+    uint64 read_id=13;
+
     Snapshot snapshot=11;
 }
 

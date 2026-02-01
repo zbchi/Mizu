@@ -25,8 +25,9 @@ func (s StateType) String() string {
 
 // 需要持久化的 Raft 状态
 type HardState struct {
-	Term        uint64
-	Vote        uint64
+	Term uint64
+	Vote uint64
+	// CommitIndex is the highest index committed by a Raft quorum.
 	CommitIndex uint64
 }
 
@@ -41,16 +42,10 @@ type Progress struct {
 	Next  uint64
 }
 
-// Ready - Raft 与应用层的接口
-// Ready 封装了需要处理的 Raft 状态更新
-// 应用层必须按顺序处理：
-//  1. 持久化 HardState
-//  2. 持久化 Entries
-//  3. 持久化/应用 Snapshot
-//  4. 发送 Messages
-//  6. 调用 Advance()
+// Ready is the boundary between Raft and the application. The application
+// persists its durable fields, sends Messages, submits committed work to the
+// apply worker, publishes ReadStates, and only then calls Advance.
 type Ready struct {
-	//  5. 应用 CommittedEntries 到状态机
 	// HardState 需要持久化的状态（term/vote/commit）
 	// 如果为空则无需持久化
 	HardState *HardState
@@ -66,6 +61,16 @@ type Ready struct {
 
 	//需要发送给其他节点的消息
 	Messages []*raftpb.Message
+
+	// ReadStates contains ReadIndex results confirmed by a quorum.
+	// They are volatile and do not need to be persisted.
+	ReadStates []ReadState
+}
+
+// ReadState is a quorum-confirmed index for one linearizable read.
+type ReadState struct {
+	ReadID uint64
+	Index  uint64
 }
 
 func (rd Ready) IsEmpty() bool {
@@ -73,12 +78,6 @@ func (rd Ready) IsEmpty() bool {
 		len(rd.Entries) == 0 &&
 		rd.Snapshot == nil &&
 		len(rd.CommittedEntries) == 0 &&
-		len(rd.Messages) == 0
-}
-
-// 快照请求（用于 Node 层通信）
-type SnapshotRequest struct {
-	Index   uint64
-	Data    []byte
-	ResultC chan *raftpb.Snapshot
+		len(rd.Messages) == 0 &&
+		len(rd.ReadStates) == 0
 }

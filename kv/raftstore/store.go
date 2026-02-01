@@ -21,7 +21,6 @@ var (
 // It encapsulates the raft layer implementation details from the KVNode.
 type Store struct {
 	peers        *peerRegistry
-	callbackMgr  *CallbackManager
 	raftWorker   *raftWorker
 	applyWorker  *applyWorker
 	transport    Transport
@@ -39,7 +38,6 @@ func NewStore(nodeID uint64, stateMachine StateMachine) *Store {
 		peers:        newPeerRegistry(),
 		stateMachine: stateMachine,
 	}
-	s.callbackMgr = NewCallbackManager(s)
 	s.raftWorker = newRaftWorker(s.peers, s)
 	s.applyWorker = newApplyWorker(s)
 	return s
@@ -71,10 +69,9 @@ func (s *Store) SetTransport(t Transport) {
 func (s *Store) receiveLoop() {
 	recvCh := s.transport.Receive()
 	for msg := range recvCh {
-		raftMsg := Msg{
-			Type:     MsgTypeRaftMessage,
-			RegionID: msg.RegionId,
-			Data:     msg,
+		raftMsg := peerEvent{
+			regionID: msg.RegionId,
+			event:    raftMessageEvent{message: msg},
 		}
 		if err := s.raftWorker.submit(raftMsg); err != nil {
 			slog.Debug("Failed to route raft message", "region", msg.RegionId, "error", err)
@@ -91,86 +88,80 @@ func (s *Store) peer(regionID uint64) *Peer {
 	return s.peers.get(regionID)
 }
 
-// nextIndex returns the index that will be assigned to the next proposed entry for a region.
-func (s *Store) nextIndex(regionID uint64) uint64 {
-	peer := s.peer(regionID)
-	if peer == nil {
-		return 0
-	}
-	return peer.NextIndex()
-}
-
 func (s *Store) sendTick(regionID uint64) error {
-	tickMsg := Msg{
-		Type:     MsgTypeTick,
-		RegionID: regionID,
-		Data:     nil,
+	tickMsg := peerEvent{
+		regionID: regionID,
+		event:    tickEvent{},
 	}
 	return s.raftWorker.submit(tickMsg)
 }
 
-func (s *Store) sendCmd(regionID uint64, cmd *RaftCmd) error {
-	cmdMsg := Msg{
-		Type:     MsgTypeRaftCmd,
-		RegionID: regionID,
-		Data:     cmd,
+func (s *Store) submitProposal(regionID uint64, proposal *proposal) error {
+	event := peerEvent{
+		regionID: regionID,
+		event:    raftCommandEvent{proposal: proposal},
 	}
-	return s.raftWorker.submit(cmdMsg)
+	return s.raftWorker.submit(event)
 }
 
-func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (ReadIndexResult, error) {
-	req := &ReadIndexRequest{Resp: make(chan ReadIndexResult, 1)}
-	msg := Msg{
-		Type:     MsgTypeReadIndex,
-		RegionID: regionID,
-		Data:     req,
+func (s *Store) requestReadIndex(ctx context.Context, regionID uint64) (*readRequest, error) {
+	req := newReadRequest(ctx.Done())
+	msg := peerEvent{
+		regionID: regionID,
+		event:    readIndexEvent{request: req},
 	}
 	if err := s.raftWorker.submit(msg); err != nil {
-		return ReadIndexResult{}, err
+		return nil, err
 	}
-
-	select {
-	case result := <-req.Resp:
-		return result, nil
-	case <-ctx.Done():
-		return ReadIndexResult{}, ctx.Err()
-	case <-s.stopCh:
-		return ReadIndexResult{}, context.Canceled
-	}
+	return req, nil
 }
 
 // Propose submits one raft command to one peer and waits for its callback response.
 func (s *Store) Propose(regionID uint64, req *kvpb.RaftCmdRequest) (*kvpb.RaftCmdResponse, error) {
-	cb := &Callback{Done: make(chan struct{})}
-	cmd := &RaftCmd{
-		Request: req,
-		Cb:      cb,
+	future := newProposalFuture()
+	pending := &proposal{
+		request: req,
+		future:  future,
 	}
 
-	if err := s.sendCmd(regionID, cmd); err != nil {
+	if err := s.submitProposal(regionID, pending); err != nil {
 		return nil, err
 	}
 
-	resp, err := cb.Wait()
+	resp, err := future.wait()
 	if err != nil && resp != nil {
 		return resp, nil
 	}
 	return resp, err
 }
 
+// completeProposal turns one applied peer-local proposal into its client response.
+func (s *Store) completeProposal(peer *Peer, index uint64, err error) {
+	proposal := peer.takeProposal(index)
+	if proposal == nil {
+		return
+	}
+
+	var responses []*kvpb.Response
+	if err == nil {
+		responses = buildWriteResponses(proposal.request)
+	}
+	proposal.future.finish(s.BuildResponse(proposal.request, peer.RegionID(), responses, err), err)
+}
+
 // WaitLinearizableRead waits until the region can be read locally under ReadIndex semantics.
 func (s *Store) WaitLinearizableRead(ctx context.Context, regionID uint64) error {
-	readState, err := s.requestReadIndex(ctx, regionID)
+	readRequest, err := s.requestReadIndex(ctx, regionID)
 	if err != nil {
 		return err
 	}
-	if readState.Err != nil || readState.Ready == nil {
-		return readState.Err
-	}
 
 	select {
-	case <-readState.Ready:
-		return nil
+	case err := <-readRequest.done:
+		if err != nil && isCanceled(readRequest.canceled) {
+			return ctx.Err()
+		}
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.stopCh:
@@ -195,18 +186,6 @@ func (s *Store) runTicker() {
 			return
 		}
 	}
-}
-
-func (s *Store) registerCallback(cmd *RaftCmd, regionID uint64) {
-	s.callbackMgr.Register(cmd, regionID)
-}
-
-func (s *Store) unregisterCallback(cmd *RaftCmd, regionID uint64) {
-	s.callbackMgr.Unregister(cmd, regionID)
-}
-
-func (s *Store) triggerCallback(regionID, index uint64, err error) {
-	s.callbackMgr.TriggerForRegion(regionID, index, err)
 }
 
 // applyCommand applies a command using the registered applier.

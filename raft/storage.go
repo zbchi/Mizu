@@ -4,8 +4,6 @@ import (
 	"github.com/zbchi/mizu/proto/raftpb"
 )
 
-const MaxLogsCount = 2000
-
 // RaftStorage defines the interface for persisting Raft state
 type RaftStorage interface {
 	SaveHardState(st HardState) error
@@ -22,11 +20,12 @@ type RaftStorage interface {
 
 // MemoryStorage is a simple in-memory storage for testing
 type MemoryStorage struct {
-	ents        []*raftpb.Entry
-	snapshot    *raftpb.Snapshot
-	hardState   HardState
-	commitIndex uint64
+	ents      []*raftpb.Entry
+	snapshot  *raftpb.Snapshot
+	hardState HardState
 }
+
+var _ RaftStorage = (*MemoryStorage)(nil)
 
 // NewMemoryStorage creates a new MemoryStorage
 func NewMemoryStorage() *MemoryStorage {
@@ -34,17 +33,6 @@ func NewMemoryStorage() *MemoryStorage {
 		ents:     make([]*raftpb.Entry, 0),
 		snapshot: &raftpb.Snapshot{},
 	}
-}
-
-// InitialState returns the initial hard state and snapshot
-func (ms *MemoryStorage) InitialState() (HardState, *raftpb.Snapshot, error) {
-	return ms.hardState, ms.snapshot, nil
-}
-
-// SetHardState sets the hard state
-func (ms *MemoryStorage) SetHardState(st HardState) error {
-	ms.hardState = st
-	return nil
 }
 
 // SaveHardState saves the hard state
@@ -56,51 +44,6 @@ func (ms *MemoryStorage) SaveHardState(st HardState) error {
 // LoadHardState loads the hard state
 func (ms *MemoryStorage) LoadHardState() (HardState, error) {
 	return ms.hardState, nil
-}
-
-// Entries returns entries between lo and hi
-func (ms *MemoryStorage) Entries(lo, hi uint64) ([]*raftpb.Entry, error) {
-	if lo > uint64(len(ms.ents)) {
-		return nil, nil
-	}
-	if hi > uint64(len(ms.ents)) {
-		hi = uint64(len(ms.ents))
-	}
-	return ms.ents[lo-1 : hi-1], nil
-}
-
-// Term returns the term of entry at index i
-func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
-	if i > uint64(len(ms.ents)) {
-		return 0, nil
-	}
-	if i < 1 {
-		return 0, nil
-	}
-	return ms.ents[i-1].Term, nil
-}
-
-// LastIndex returns the last index
-func (ms *MemoryStorage) LastIndex() uint64 {
-	return uint64(len(ms.ents))
-}
-
-// FirstIndex returns the first index
-func (ms *MemoryStorage) FirstIndex() uint64 {
-	return 1
-}
-
-// Snapshot returns the snapshot
-func (ms *MemoryStorage) Snapshot() (*raftpb.Snapshot, error) {
-	return ms.snapshot, nil
-}
-
-// ApplySnapshot applies the snapshot
-func (ms *MemoryStorage) ApplySnapshot(snap *raftpb.Snapshot) error {
-	ms.snapshot = snap
-	ms.ents = make([]*raftpb.Entry, 0)
-	ms.commitIndex = snap.Index
-	return nil
 }
 
 // SaveSnapshot saves the snapshot
@@ -123,16 +66,6 @@ func (ms *MemoryStorage) SaveEntries(entries []*raftpb.Entry) error {
 	return nil
 }
 
-// CreateSnapshot creates a snapshot at index i
-func (ms *MemoryStorage) CreateSnapshot(i uint64, data []byte) (*raftpb.Snapshot, error) {
-	ms.snapshot = &raftpb.Snapshot{
-		Index: i,
-		Term:  ms.ents[i-1].Term,
-		Data:  data,
-	}
-	return ms.snapshot, nil
-}
-
 // Compact compacts the log up to index i
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	if compactIndex <= ms.snapshot.Index {
@@ -148,22 +81,14 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	return nil
 }
 
-// Append appends entries
-func (ms *MemoryStorage) Append(entries []*raftpb.Entry) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	ms.ents = append(ms.ents, entries...)
-	return nil
-}
-
 // LoadEntries loads entries in the range [lo, hi)
 func (ms *MemoryStorage) LoadEntries(lo, hi uint64) ([]*raftpb.Entry, error) {
-	if lo > uint64(len(ms.ents)) {
+	last := uint64(len(ms.ents)) + 1
+	if lo == 0 || lo >= last {
 		return nil, nil
 	}
-	if hi > uint64(len(ms.ents)) {
-		hi = uint64(len(ms.ents))
+	if hi > last {
+		hi = last
 	}
 	if lo >= hi {
 		return nil, nil

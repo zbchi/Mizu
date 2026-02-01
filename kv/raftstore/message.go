@@ -1,41 +1,36 @@
 package raftstore
 
-import "github.com/zbchi/mizu/proto/kvpb"
+import "github.com/zbchi/mizu/proto/raftpb"
 
-type MsgType int
-
-const (
-	MsgTypeRaftMessage MsgType = iota
-	MsgTypeRaftCmd
-	MsgTypeTick
-	MsgTypeSnapshotTrigger
-	MsgTypeReadIndex
-)
-
-// Msg is an internal event consumed by raftWorker.
-type Msg struct {
-	Type     MsgType
-	RegionID uint64
-	Data     interface{}
+// peerEvent routes one typed event to a local Peer.
+type peerEvent struct {
+	regionID uint64
+	event    raftEvent
 }
 
-// RaftCmd is a replicated business command with its completion callback.
-type RaftCmd struct {
-	Request *kvpb.RaftCmdRequest
-	Cb      *Callback
-	Index   uint64
+// raftEvent is a closed set of events consumed by raftWorker. Concrete event
+// types keep the worker dispatch type-safe without introducing a framework.
+type raftEvent interface{ isRaftEvent() }
+
+type raftMessageEvent struct{ message *raftpb.Message }
+
+func (raftMessageEvent) isRaftEvent() {}
+
+type raftCommandEvent struct{ proposal *proposal }
+
+func (raftCommandEvent) isRaftEvent() {}
+
+type tickEvent struct{}
+
+func (tickEvent) isRaftEvent() {}
+
+type snapshotTask struct {
+	index uint64
+	data  []byte
 }
 
-type SnapshotTrigger struct {
-	Index uint64
-	Data  []byte
-}
+func (snapshotTask) isRaftEvent() {}
 
-type ReadIndexRequest struct {
-	Resp chan ReadIndexResult
-}
+type readIndexEvent struct{ request *readRequest }
 
-type ReadIndexResult struct {
-	Ready <-chan struct{}
-	Err   error
-}
+func (readIndexEvent) isRaftEvent() {}

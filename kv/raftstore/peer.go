@@ -1,9 +1,7 @@
 package raftstore
 
 import (
-	"fmt"
 	"log/slog"
-	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -20,8 +18,11 @@ type Peer struct {
 	leaderNodeID      atomic.Uint64
 	appliedIndex      atomic.Uint64
 	lastSnapshotIndex atomic.Uint64
+	pendingSnapshot   atomic.Uint64
+	proposalMu        sync.Mutex
+	pendingProposals  map[uint64]*proposal
 
-	readWaitQueue *ReadWaitQueue
+	reads *readTracker
 }
 
 // NewPeer creates a new peer for a region
@@ -50,7 +51,7 @@ func NewPeer(reg *region.Region, nodeID uint64, raftStorage raft.RaftStorage) *P
 	// entries after snapshot: [snapshotIndex+1, commitIndex)
 	var entries []*raftpb.Entry
 	if !hardState.IsEmpty() {
-		start := uint64(0)
+		start := uint64(1)
 		if snapshot != nil && snapshot.Index > 0 {
 			start = snapshot.Index + 1
 		}
@@ -72,18 +73,32 @@ func NewPeer(reg *region.Region, nodeID uint64, raftStorage raft.RaftStorage) *P
 		slog.Info("Restored raft state", "commitIndex", hardState.CommitIndex, "term", hardState.Term, "entries", len(entries))
 	}
 
-	// 6. Set appliedIndex with raft state machine
-	appliedIndex := raftInst.AppliedIndex()
-	peer := &Peer{
-		region:        reg,
-		raft:          raftInst,
-		raftStorage:   raftStorage,
-		readWaitQueue: &ReadWaitQueue{},
+	// The actual state machine may have crashed behind commitIndex. Start its
+	// apply watermark conservatively; the restored Ready will replay the
+	// snapshot and committed entries before linearizable reads are released.
+	lastSnapshotIndex := uint64(0)
+	if snapshot != nil {
+		lastSnapshotIndex = snapshot.Index
 	}
+	peer := &Peer{
+		region:           reg,
+		raft:             raftInst,
+		raftStorage:      raftStorage,
+		pendingProposals: make(map[uint64]*proposal),
+	}
+	peer.reads = newReadTracker(&peer.appliedIndex)
 	peer.syncLeaderNodeID()
-	peer.appliedIndex.Store(appliedIndex)
-	peer.lastSnapshotIndex.Store(appliedIndex)
+	peer.lastSnapshotIndex.Store(lastSnapshotIndex)
 	return peer
+}
+
+// takeProposal removes and returns the proposal applied at index.
+func (p *Peer) takeProposal(index uint64) *proposal {
+	p.proposalMu.Lock()
+	cmd := p.pendingProposals[index]
+	delete(p.pendingProposals, index)
+	p.proposalMu.Unlock()
+	return cmd
 }
 
 // RegionID returns region ID
@@ -98,27 +113,33 @@ func (p *Peer) Region() *region.Region {
 
 // Tick advances raft ticker
 func (p *Peer) Tick() {
+	p.pruneCanceledReadRequests()
 	p.raft.Tick()
 	p.syncLeaderNodeID()
+	p.finishReadRequestsIfNotLeader()
 }
 
 // Step processes a raft message
 func (p *Peer) Step(m *raftpb.Message) error {
 	err := p.raft.Step(m)
 	p.syncLeaderNodeID()
+	p.finishReadRequestsIfNotLeader()
 	return err
 }
 
-// Propose proposes a command to raft
-func (p *Peer) Propose(data []byte) bool {
-	ok := p.raft.Propose(data)
-	p.syncLeaderNodeID()
-	return ok
-}
+// Propose appends data and records its completion under the index Raft assigned.
+// Both actions run on raftWorker, before Ready can reach apply.
+func (p *Peer) propose(data []byte, proposal *proposal) bool {
+	if !p.raft.Propose(data) {
+		p.syncLeaderNodeID()
+		return false
+	}
 
-// NextIndex returns the index that will be assigned to the next proposed entry
-func (p *Peer) NextIndex() uint64 {
-	return p.raft.LastIndex() + 1
+	p.proposalMu.Lock()
+	p.pendingProposals[p.raft.LastIndex()] = proposal
+	p.proposalMu.Unlock()
+	p.syncLeaderNodeID()
+	return true
 }
 
 // LeaderNodeID returns the latest leader hint published by the raft worker.
@@ -129,11 +150,6 @@ func (p *Peer) LeaderNodeID() uint64 {
 // Ready returns ready state for raft
 func (p *Peer) Ready() raft.Ready {
 	return p.raft.Ready()
-}
-
-// HasReady checks if there are pending ready states
-func (p *Peer) HasReady() bool {
-	return !p.raft.Ready().IsEmpty()
 }
 
 // Advance advances raft state machine after processing ready
@@ -153,135 +169,76 @@ func (p *Peer) Snapshot(index uint64, data []byte) {
 	p.syncLeaderNodeID()
 }
 
-// GetAppliedIndex returns current applied index
+// persistReady writes every durable field in a Ready before its messages are
+// sent or committed entries are handed to the apply worker.
+func (p *Peer) persistReady(rd raft.Ready) error {
+	if rd.HardState != nil && !rd.HardState.IsEmpty() {
+		if err := p.raftStorage.SaveHardState(*rd.HardState); err != nil {
+			return err
+		}
+	}
+	if len(rd.Entries) > 0 {
+		if err := p.raftStorage.SaveEntries(rd.Entries); err != nil {
+			return err
+		}
+	}
+	if !raft.IsEmptySnap(rd.Snapshot) {
+		if err := p.raftStorage.SaveSnapshot(rd.Snapshot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// saveSnapshotAndCompact persists a locally-created snapshot, then publishes
+// the matching compaction to Raft and its durable log.
+func (p *Peer) saveSnapshotAndCompact(task snapshotTask) error {
+	defer p.pendingSnapshot.CompareAndSwap(task.index, 0)
+
+	snapshot := &raftpb.Snapshot{
+		Term:  p.Term(),
+		Index: task.index,
+		Data:  task.data,
+	}
+	if err := p.raftStorage.SaveSnapshot(snapshot); err != nil {
+		return err
+	}
+	p.Snapshot(task.index, task.data)
+	if err := p.raftStorage.Compact(task.index); err != nil {
+		return err
+	}
+	p.lastSnapshotIndex.Store(task.index)
+	return nil
+}
+
+// GetAppliedIndex returns the highest index applied to the KV state machine.
 func (p *Peer) GetAppliedIndex() uint64 {
 	return p.appliedIndex.Load()
 }
 
-// SetAppliedIndex updates the peer's applied index after a committed entry or snapshot is applied.
+// SetAppliedIndex records a committed entry or snapshot after the KV state machine applies it.
 func (p *Peer) SetAppliedIndex(index uint64) {
 	p.appliedIndex.Store(index)
 }
 
-// LastSnapshotIndex returns the index of the latest snapshot taken for this peer.
-func (p *Peer) LastSnapshotIndex() uint64 {
-	return p.lastSnapshotIndex.Load()
+// beginSnapshot reserves the next locally-created snapshot. Only one snapshot
+// may be queued while raftWorker persists and compacts the previous one.
+func (p *Peer) beginSnapshot(threshold uint64) (uint64, bool) {
+	appliedIndex := p.GetAppliedIndex()
+	lastSnapshotIndex := p.lastSnapshotIndex.Load()
+	if appliedIndex < lastSnapshotIndex || appliedIndex-lastSnapshotIndex < threshold {
+		return 0, false
+	}
+	if !p.pendingSnapshot.CompareAndSwap(0, appliedIndex) {
+		return 0, false
+	}
+	return appliedIndex, true
 }
 
-// SetLastSnapshotIndex records the latest snapshot index for this peer.
-func (p *Peer) SetLastSnapshotIndex(index uint64) {
-	p.lastSnapshotIndex.Store(index)
-}
-
-// PrepareLinearizableRead is called by the raft worker to serialize ReadIndex checks
-// with the peer's raft state machine.
-func (p *Peer) PrepareLinearizableRead() ReadIndexResult {
-	leaderNodeID := p.raft.Lead()
-	p.leaderNodeID.Store(leaderNodeID)
-
-	readIndex := p.raft.ReadIndex()
-	result := ReadIndexResult{}
-	if readIndex == 0 {
-		result.Err = ErrNotLeader
-		return result
-	}
-
-	req := &ReadRequest{
-		ReadIndex: readIndex,
-		Done:      make(chan struct{}),
-	}
-	if _, queued := p.readWaitQueue.AddIfPending(req, p.GetAppliedIndex); queued {
-		result.Ready = req.Done
-	}
-	return result
-}
-
-// notifyReadWaitQueue notifies read wait queue when appliedIndex advances
-func (p *Peer) notifyReadWaitQueue() {
-	p.readWaitQueue.Notify(p.GetAppliedIndex())
+func (p *Peer) cancelSnapshot(index uint64) {
+	p.pendingSnapshot.CompareAndSwap(index, 0)
 }
 
 func (p *Peer) syncLeaderNodeID() {
 	p.leaderNodeID.Store(p.raft.Lead())
-}
-
-type peerRegistry struct {
-	mu    sync.RWMutex
-	peers map[uint64]*Peer
-}
-
-func newPeerRegistry() *peerRegistry {
-	return &peerRegistry{peers: make(map[uint64]*Peer)}
-}
-
-func (r *peerRegistry) register(peer *Peer) error {
-	if peer == nil {
-		return fmt.Errorf("register peer: peer is nil")
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.peers[peer.RegionID()]; exists {
-		return fmt.Errorf("register peer: region %d already exists", peer.RegionID())
-	}
-	r.peers[peer.RegionID()] = peer
-	return nil
-}
-
-func (r *peerRegistry) get(regionID uint64) *Peer {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.peers[regionID]
-}
-
-func (r *peerRegistry) listRegionIDs() []uint64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	regionIDs := make([]uint64, 0, len(r.peers))
-	for regionID := range r.peers {
-		regionIDs = append(regionIDs, regionID)
-	}
-	sort.Slice(regionIDs, func(i, j int) bool { return regionIDs[i] < regionIDs[j] })
-	return regionIDs
-}
-
-func (r *peerRegistry) clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	clear(r.peers)
-}
-
-type ReadWaitQueue struct {
-	mu    sync.Mutex
-	queue []*ReadRequest
-}
-
-func (q *ReadWaitQueue) Notify(appliedIndex uint64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	pending := q.queue[:0]
-	for _, req := range q.queue {
-		if req.ReadIndex <= appliedIndex {
-			close(req.Done)
-			continue
-		}
-		pending = append(pending, req)
-	}
-	q.queue = pending
-}
-
-func (q *ReadWaitQueue) AddIfPending(req *ReadRequest, currentAppliedIndex func() uint64) (int, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if currentAppliedIndex() >= req.ReadIndex {
-		return len(q.queue), false
-	}
-	q.queue = append(q.queue, req)
-	return len(q.queue), true
-}
-
-type ReadRequest struct {
-	ReadIndex uint64
-	Done      chan struct{}
 }

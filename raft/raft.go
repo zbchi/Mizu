@@ -34,6 +34,9 @@ type Raft struct {
 	pendingEntries   []*raftpb.Entry
 	pendingSnapshot  *raftpb.Snapshot
 	committedEntries []*raftpb.Entry
+	readStates       []ReadState
+	readRounds       map[uint64]*readRound
+	committedCursor  uint64
 }
 
 type Config struct {
@@ -61,6 +64,7 @@ func NewRaft(cfg Config) *Raft {
 		state:            StateFollower,
 		prs:              prs,
 		votes:            make(map[uint64]bool),
+		readRounds:       make(map[uint64]*readRound),
 		raftLog:          NewRaftLog(),
 		electionTimeout:  cfg.ElectionTimeout,
 		heartbeatTimeout: cfg.HeartbeatTimeout,
@@ -72,15 +76,17 @@ func (r *Raft) RestoreState(hs HardState, entries []*raftpb.Entry) {
 	for _, e := range entries {
 		r.raftLog.Append(e)
 	}
-	// Apply committed entries to generate them in the next Ready
-	r.applyCommitted()
+	// Emit restored committed entries in the next Ready.
+	r.emitCommittedEntries()
 }
 
 func (r *Raft) RestoreSnapshot(snap *raftpb.Snapshot) {
 	if snap.Index == 0 {
 		return
 	}
+	r.pendingSnapshot = snap
 	r.raftLog.Restore(snap.Index, snap.Term)
+	r.committedCursor = snap.Index
 	r.hardState.CommitIndex = max(snap.Index, r.hardState.CommitIndex)
 	if snap.Term > r.hardState.Term {
 		r.hardState.Term = snap.Term
@@ -95,7 +101,8 @@ func (r *Raft) Tick() {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			r.bcastAppend()
+			r.bcastAppend(0)
+			r.retryReadRounds()
 		}
 	default:
 		r.electionElapsed++
@@ -120,7 +127,7 @@ func (r *Raft) Step(m *raftpb.Message) error {
 			}
 		case raftpb.Type_MsgBeat:
 			if r.state == StateLeader {
-				r.bcastAppend()
+				r.bcastAppend(0)
 			}
 		}
 		return nil
@@ -141,7 +148,11 @@ func (r *Raft) Propose(data []byte) bool {
 	if r.state != StateLeader {
 		return false
 	}
+	r.appendEntry(data)
+	return true
+}
 
+func (r *Raft) appendEntry(data []byte) {
 	index := r.raftLog.LastIndex() + 1
 	entry := &raftpb.Entry{
 		Term:  r.hardState.Term,
@@ -155,9 +166,8 @@ func (r *Raft) Propose(data []byte) bool {
 	r.prs[r.id].Match = index
 	r.prs[r.id].Next = index + 1
 
-	r.bcastAppend()
+	r.bcastAppend(0)
 	r.maybeCommit()
-	return true
 }
 
 func (r *Raft) Ready() Ready {
@@ -167,6 +177,7 @@ func (r *Raft) Ready() Ready {
 		Snapshot:         r.pendingSnapshot,
 		CommittedEntries: r.committedEntries,
 		Messages:         r.msgs,
+		ReadStates:       r.readStates,
 	}
 	return rd
 }
@@ -177,6 +188,7 @@ func (r *Raft) Advance() {
 	r.pendingSnapshot = nil
 	r.committedEntries = nil
 	r.msgs = nil
+	r.readStates = nil
 }
 
 func (r *Raft) Snapshot(index uint64, data []byte) {
@@ -187,7 +199,7 @@ func (r *Raft) Snapshot(index uint64, data []byte) {
 	term := r.raftLog.Term(index)
 	r.raftLog.CompactTo(index, term)
 	r.hardState.CommitIndex = max(index, r.hardState.CommitIndex)
-	r.raftLog.SetAppliedIndex(max(index, r.raftLog.AppliedIndex()))
+	r.committedCursor = max(index, r.committedCursor)
 	r.markHardStateChanged()
 
 	// 更新 Leader 的 progress
@@ -219,19 +231,13 @@ func (r *Raft) Lead() uint64        { return r.lead }
 func (r *Raft) ID() uint64          { return r.id }
 func (r *Raft) CommitIndex() uint64 { return r.hardState.CommitIndex }
 
-func (r *Raft) ReadIndex() uint64 {
-	if r.state != StateLeader {
-		return 0
-	}
-	return r.hardState.CommitIndex
-}
-
 func (r *Raft) LastIndex() uint64 {
 	return r.raftLog.LastIndex()
 }
 
-func (r *Raft) AppliedIndex() uint64 {
-	return r.raftLog.AppliedIndex()
+// ReadyIndex returns the highest committed index emitted through Ready.
+func (r *Raft) ReadyIndex() uint64 {
+	return r.committedCursor
 }
 
 func (r *Raft) becomeFollower(term, lead uint64) {
@@ -247,6 +253,7 @@ func (r *Raft) becomeFollower(term, lead uint64) {
 	}
 
 	r.votes = make(map[uint64]bool)
+	r.readRounds = make(map[uint64]*readRound)
 }
 
 func (r *Raft) becomeCandidate() {
@@ -256,6 +263,7 @@ func (r *Raft) becomeCandidate() {
 	r.hardState.Vote = r.id
 	r.markHardStateChanged()
 	r.votes = map[uint64]bool{r.id: true}
+	r.readRounds = make(map[uint64]*readRound)
 	r.electionElapsed = 0
 }
 
@@ -271,7 +279,9 @@ func (r *Raft) becomeLeader() {
 		pr.Next = r.raftLog.LastIndex() + 1
 	}
 
-	r.bcastAppend()
+	// A leader must commit an entry from its own term before serving ReadIndex.
+	// Empty entries are already treated as no-ops by the apply layer.
+	r.appendEntry(nil)
 }
 
 func (r *Raft) stepFollower(m *raftpb.Message) error {
@@ -388,7 +398,7 @@ func (r *Raft) handleVoteResp(m *raftpb.Message) {
 		}
 	}
 
-	quorum := len(r.prs)/2 + 1
+	quorum := r.quorum()
 	if granted >= quorum {
 		r.becomeLeader()
 	} else if rejected >= quorum {
@@ -396,21 +406,21 @@ func (r *Raft) handleVoteResp(m *raftpb.Message) {
 	}
 }
 
-func (r *Raft) bcastAppend() {
+func (r *Raft) bcastAppend(readID uint64) {
 	for id := range r.prs {
 		if id == r.id {
 			continue
 		}
-		r.sendAppend(id)
+		r.sendAppend(id, readID)
 	}
 }
 
-func (r *Raft) sendAppend(to uint64) {
+func (r *Raft) sendAppend(to, readID uint64) {
 	pr := r.prs[to]
 
 	// 需要发送快照
 	if pr.Next <= r.raftLog.FirstIndex() {
-		r.sendSnapshot(to)
+		r.sendSnapshot(to, readID)
 		return
 	}
 
@@ -427,10 +437,11 @@ func (r *Raft) sendAppend(to uint64) {
 		LogTerm:  prevTerm,
 		Entries:  entries,
 		Commit:   r.hardState.CommitIndex,
+		ReadId:   readID,
 	})
 }
 
-func (r *Raft) sendSnapshot(to uint64) {
+func (r *Raft) sendSnapshot(to, readID uint64) {
 	if r.currentSnapshot == nil || r.currentSnapshot.Index == 0 {
 		slog.Warn("no snapshot available to send", "to", to, "id", r.id)
 		return
@@ -442,15 +453,17 @@ func (r *Raft) sendSnapshot(to uint64) {
 		To:       to,
 		Term:     r.hardState.Term,
 		Snapshot: r.currentSnapshot,
+		ReadId:   readID,
 	})
 }
 
 func (r *Raft) handleAppend(m *raftpb.Message) {
 	reply := &raftpb.Message{
-		Type: raftpb.Type_MsgAppResp,
-		From: r.id,
-		To:   m.From,
-		Term: r.hardState.Term,
+		Type:   raftpb.Type_MsgAppResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		ReadId: m.ReadId,
 	}
 
 	if r.hardState.Term > m.Term {
@@ -506,9 +519,10 @@ func (r *Raft) handleAppend(m *raftpb.Message) {
 
 func (r *Raft) handleAppendResp(m *raftpb.Message) {
 	pr := r.prs[m.From]
-	if pr == nil {
+	if pr == nil || m.Term != r.hardState.Term {
 		return
 	}
+	r.ackReadRound(m.ReadId, m.From)
 
 	if !m.Reject {
 		pr.Match = m.LogIndex
@@ -534,10 +548,11 @@ func (r *Raft) handleAppendResp(m *raftpb.Message) {
 
 func (r *Raft) handleSnapshot(m *raftpb.Message) {
 	reply := &raftpb.Message{
-		Type: raftpb.Type_MsgSnapResp,
-		From: r.id,
-		To:   m.From,
-		Term: r.hardState.Term,
+		Type:   raftpb.Type_MsgSnapResp,
+		From:   r.id,
+		To:     m.From,
+		Term:   r.hardState.Term,
+		ReadId: m.ReadId,
 	}
 
 	if r.hardState.Term > m.Term || m.Snapshot == nil {
@@ -563,6 +578,10 @@ func (r *Raft) handleSnapshot(m *raftpb.Message) {
 }
 
 func (r *Raft) handleSnapshotResp(m *raftpb.Message) {
+	if m.Term != r.hardState.Term {
+		return
+	}
+	r.ackReadRound(m.ReadId, m.From)
 	if m.Reject {
 		return
 	}
@@ -587,14 +606,21 @@ func (r *Raft) commitTo(index uint64) {
 		slog.Info("commit index advanced", "node", r.id, "from", r.hardState.CommitIndex, "to", index)
 		r.hardState.CommitIndex = index
 		r.markHardStateChanged()
-		r.applyCommitted()
+		r.emitCommittedEntries()
+		r.startPendingReadRounds()
 	}
 }
 
-func (r *Raft) applyCommitted() {
-	for r.raftLog.AppliedIndex() < r.hardState.CommitIndex {
-		idx := r.raftLog.AppliedIndex() + 1
-		r.raftLog.SetAppliedIndex(idx)
+func (r *Raft) quorum() int {
+	return len(r.prs)/2 + 1
+}
+
+// emitCommittedEntries appends newly committed log entries to Ready and advances
+// the Ready emission cursor. State machine application happens in raftstore.
+func (r *Raft) emitCommittedEntries() {
+	for r.committedCursor < r.hardState.CommitIndex {
+		idx := r.committedCursor + 1
+		r.committedCursor = idx
 
 		if idx < r.raftLog.FirstIndex() || idx > r.raftLog.LastIndex() {
 			continue
@@ -613,7 +639,7 @@ func (r *Raft) maybeCommit() {
 		return matches[i] > matches[j]
 	})
 
-	quorum := len(r.prs)/2 + 1
+	quorum := r.quorum()
 	mci := matches[quorum-1]
 
 	// 只提交当前任期的日志

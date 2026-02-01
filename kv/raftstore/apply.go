@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 
@@ -63,12 +64,13 @@ func (aw *applyWorker) run(stopCh <-chan struct{}) {
 	}
 }
 
-// Submit submits an apply task to the worker
-func (aw *applyWorker) Submit(task ApplyTask) {
+// Submit hands a task to the worker without dropping committed entries.
+func (aw *applyWorker) Submit(task ApplyTask) error {
 	select {
 	case aw.taskCh <- task:
-	default:
-		slog.Warn("applyWorker task channel full, dropping apply task", "region", task.RegionID, "entries", len(task.Entries))
+		return nil
+	case <-aw.store.stopCh:
+		return context.Canceled
 	}
 }
 
@@ -89,45 +91,43 @@ func (aw *applyWorker) apply(task ApplyTask) {
 		var req kvpb.RaftCmdRequest
 		if err := protov2.Unmarshal(entry.Data, &req); err != nil {
 			slog.Error("applyWorker: failed to unmarshal request", "error", err, "index", entry.Index)
-			aw.store.triggerCallback(task.RegionID, entry.Index, err)
+			aw.store.completeProposal(task.Peer, entry.Index, err)
 			task.Peer.SetAppliedIndex(entry.Index)
 			continue
 		}
 
 		if err := aw.store.applyCommand(task.RegionID, &req); err != nil {
 			slog.Error("applyWorker: failed to apply command", "error", err, "index", entry.Index)
-			aw.store.triggerCallback(task.RegionID, entry.Index, err)
+			aw.store.completeProposal(task.Peer, entry.Index, err)
 			task.Peer.SetAppliedIndex(entry.Index)
 			continue
 		}
 
-		aw.store.triggerCallback(task.RegionID, entry.Index, nil)
+		aw.store.completeProposal(task.Peer, entry.Index, nil)
 		task.Peer.SetAppliedIndex(entry.Index)
 
 		// snapshot trigger
-		appliedIndex := task.Peer.GetAppliedIndex()
-		if appliedIndex-task.Peer.LastSnapshotIndex() >= SnapshotThreshold {
+		if appliedIndex, due := task.Peer.beginSnapshot(SnapshotThreshold); due {
 			data, err := aw.store.createSnapshot(task.RegionID)
 			if err != nil {
 				slog.Error("applyWorker: failed to create snapshot", "region", task.RegionID, "error", err)
+				task.Peer.cancelSnapshot(appliedIndex)
 				continue
 			}
 
-			_ = aw.store.raftWorker.submit(Msg{
-				Type:     MsgTypeSnapshotTrigger,
-				RegionID: task.RegionID,
-				Data: &SnapshotTrigger{
-					Index: appliedIndex,
-					Data:  data,
-				},
-			})
-
-			task.Peer.SetLastSnapshotIndex(appliedIndex)
+			if err := aw.store.raftWorker.submit(peerEvent{
+				regionID: task.RegionID,
+				event:    snapshotTask{index: appliedIndex, data: data},
+			}); err != nil {
+				slog.Error("applyWorker: failed to schedule snapshot", "region", task.RegionID, "error", err)
+				task.Peer.cancelSnapshot(appliedIndex)
+				continue
+			}
 		}
 	}
 
 	// Notify waiting read requests for this peer
-	task.Peer.notifyReadWaitQueue()
+	task.Peer.notifyAppliedReads()
 }
 
 // applySnapshot applies a snapshot to the peer
