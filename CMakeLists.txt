@@ -9,6 +9,8 @@ add_library(lsmtree
   src/db/db_impl.cc
   src/db/filename.cc
   src/db/write_batch.cc
+  src/util/coding.cc
+  src/util/crc32c.cc
   src/util/status.cc
 )
 add_library(lsmtree::lsmtree ALIAS lsmtree)
@@ -28,10 +30,15 @@ if(LSMTREE_BUILD_TESTS)
   add_executable(lsmtree_tests
     tests/test_main.cc
     tests/db/db_test.cc
+    tests/util/coding_test.cc
+    tests/util/crc32c_test.cc
   )
   target_link_libraries(lsmtree_tests PRIVATE lsmtree::lsmtree)
   target_compile_features(lsmtree_tests PRIVATE cxx_std_17)
-  target_include_directories(lsmtree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+  target_include_directories(lsmtree_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+  )
   target_compile_options(lsmtree_tests PRIVATE -Wall -Wextra -Wpedantic)
 
   add_test(NAME lsmtree_tests COMMAND lsmtree_tests)
