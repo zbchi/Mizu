@@ -5,6 +5,7 @@
 #include <string>
 
 #include "lsmtree/db.h"
+#include "wal/wal_format.h"
 
 namespace lsmtree {
 
@@ -12,7 +13,8 @@ using SequenceNumber = std::uint64_t;
 
 // sequence 只使用低 56 位
 constexpr SequenceNumber kMaxSequenceNumber = (SequenceNumber{1} << 56U) - 1U;
-constexpr std::size_t kMaxWriteBatchPayloadSize = 64U * 1024U * 1024U;
+// WriteBatch payload 必须能完整放入一条 WAL record
+constexpr std::size_t kMaxWriteBatchPayloadSize = kMaxWalRecordPayloadSize;
 
 // payload 依次保存首个 sequence 操作数和各条操作
 class WriteBatchCodec {
