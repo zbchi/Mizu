@@ -92,6 +92,7 @@ struct WriteOptions {
 };
 
 class DBImpl;
+class WriteBatchCodec;
 
 class WriteBatch {
  public:
@@ -114,6 +115,7 @@ class WriteBatch {
   std::unique_ptr<Rep> rep_;
 
   friend class DBImpl;
+  friend class WriteBatchCodec;
 };
 
 class Iterator {
