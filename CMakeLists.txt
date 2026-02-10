@@ -13,6 +13,7 @@ add_library(lsmtree
   src/util/coding.cc
   src/util/crc32c.cc
   src/util/status.cc
+  src/wal/wal_reader.cc
   src/wal/wal_writer.cc
 )
 add_library(lsmtree::lsmtree ALIAS lsmtree)
@@ -35,6 +36,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/write_batch_codec_test.cc
     tests/util/coding_test.cc
     tests/util/crc32c_test.cc
+    tests/wal/wal_reader_test.cc
     tests/wal/wal_writer_test.cc
   )
   target_link_libraries(lsmtree_tests PRIVATE lsmtree::lsmtree)
