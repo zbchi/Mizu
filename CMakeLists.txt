@@ -8,6 +8,7 @@ add_library(lsmtree
   src/db/db.cc
   src/db/db_impl.cc
   src/db/filename.cc
+  src/db/internal_key.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
   src/util/coding.cc
@@ -33,6 +34,7 @@ if(LSMTREE_BUILD_TESTS)
   add_executable(lsmtree_tests
     tests/test_main.cc
     tests/db/db_test.cc
+    tests/db/internal_key_test.cc
     tests/db/write_batch_codec_test.cc
     tests/util/coding_test.cc
     tests/util/crc32c_test.cc

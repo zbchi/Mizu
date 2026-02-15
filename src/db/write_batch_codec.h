@@ -1,18 +1,14 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <string>
 
+#include "db/internal_key.h"
 #include "lsmtree/db.h"
 #include "wal/wal_format.h"
 
 namespace lsmtree {
 
-using SequenceNumber = std::uint64_t;
-
-// sequence 只使用低 56 位
-constexpr SequenceNumber kMaxSequenceNumber = (SequenceNumber{1} << 56U) - 1U;
 // WriteBatch payload 必须能完整放入一条 WAL record
 constexpr std::size_t kMaxWriteBatchPayloadSize = kMaxWalRecordPayloadSize;
 
