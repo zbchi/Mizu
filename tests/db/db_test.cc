@@ -1,12 +1,17 @@
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
 #include <unistd.h>
 
+#include "db/filename.h"
+#include "db/write_batch_codec.h"
 #include "lsmtree/db.h"
 #include "test.h"
+#include "wal/wal_writer.h"
 
 namespace lsmtree {
 namespace {
@@ -38,6 +43,38 @@ DB::Handle openOrCreate(const std::filesystem::path& path) {
   options.open_mode = OpenMode::kOpenOrCreate;
   ASSERT_OK(DB::open(options, path, &db));
   return db;
+}
+
+std::string get(DB& db, Slice key) {
+  std::string value;
+  ASSERT_OK(db.get({}, key, &value));
+  return value;
+}
+
+void flipLastByte(const std::filesystem::path& path) {
+  std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  ASSERT_TRUE(file.is_open());
+
+  file.seekg(-1, std::ios::end);
+  char byte = 0;
+  file.read(&byte, 1);
+  ASSERT_TRUE(file.good());
+
+  byte ^= 1;
+  file.seekp(-1, std::ios::end);
+  file.write(&byte, 1);
+  ASSERT_TRUE(file.good());
+}
+
+void appendEncodedBatch(const std::filesystem::path& path,
+                        SequenceNumber first_sequence,
+                        const WriteBatch& batch) {
+  std::string payload;
+  ASSERT_OK(WriteBatchCodec::encode(batch, first_sequence, payload));
+
+  std::unique_ptr<WalWriter> writer;
+  ASSERT_OK(WalWriter::open(path, writer));
+  ASSERT_OK(writer->append(payload));
 }
 
 }
@@ -106,6 +143,112 @@ TEST(writeBatchIsAtomicAndPreservesOperationOrder) {
   ASSERT_OK(db->get({}, "one", &value));
   ASSERT_EQ(value, "new");
   ASSERT_EQ(db->get({}, "two", &value).code(), StatusCode::kNotFound);
+}
+
+TEST(walRecoversWritesOverwritesDeletesAndBinaryValues) {
+  TempDirectory directory;
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    WriteBatch batch;
+    const std::string binary_value("a\0b", 3);
+    batch.put("one", "old")
+        .put("one", "new")
+        .put("binary", binary_value)
+        .put("deleted", "value")
+        .erase("deleted");
+    ASSERT_OK(db->write({Durability::kSync}, batch));
+  }
+
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "one"), "new");
+  ASSERT_EQ(get(*db, "binary"), std::string("a\0b", 3));
+  std::string value;
+  ASSERT_EQ(db->get({}, "deleted", &value).code(), StatusCode::kNotFound);
+}
+
+TEST(walRecoveryTruncatesIncompleteTailBeforeAppending) {
+  TempDirectory directory;
+  std::uintmax_t first_record_end = 0;
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    WriteBatch first;
+    first.put("x", "1").put("y", "2");
+    ASSERT_OK(db->write({}, first));
+  }
+
+  const auto wal_path = walFileName(directory.path());
+  first_record_end = std::filesystem::file_size(wal_path);
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    WriteBatch second;
+    second.put("x", "new").erase("y");
+    ASSERT_OK(db->write({}, second));
+  }
+
+  const std::uintmax_t complete_size = std::filesystem::file_size(wal_path);
+  ASSERT_TRUE(complete_size > first_record_end);
+  std::filesystem::resize_file(wal_path, complete_size - 1U);
+
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    ASSERT_EQ(get(*db, "x"), "1");
+    ASSERT_EQ(get(*db, "y"), "2");
+    ASSERT_EQ(std::filesystem::file_size(wal_path), first_record_end);
+    ASSERT_OK(db->put({}, "z", "3"));
+  }
+
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "x"), "1");
+  ASSERT_EQ(get(*db, "y"), "2");
+  ASSERT_EQ(get(*db, "z"), "3");
+}
+
+TEST(walRecoveryRejectsChecksumMismatch) {
+  TempDirectory directory;
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    ASSERT_OK(db->put({}, "key", "value"));
+  }
+
+  flipLastByte(walFileName(directory.path()));
+
+  DB::Handle db;
+  const Status status = DB::open({}, directory.path(), &db);
+  ASSERT_EQ(status.code(), StatusCode::kCorruption);
+  ASSERT_TRUE(db == nullptr);
+}
+
+TEST(walRecoveryRejectsMalformedBatchAndSequenceGap) {
+  {
+    TempDirectory directory;
+    std::filesystem::create_directories(directory.path());
+    std::unique_ptr<WalWriter> writer;
+    ASSERT_OK(WalWriter::open(walFileName(directory.path()), writer));
+    ASSERT_OK(writer->append("not a write batch"));
+    writer.reset();
+
+    DB::Handle db;
+    ASSERT_EQ(DB::open({}, directory.path(), &db).code(),
+              StatusCode::kCorruption);
+    ASSERT_TRUE(db == nullptr);
+  }
+
+  {
+    TempDirectory directory;
+    std::filesystem::create_directories(directory.path());
+    const auto wal_path = walFileName(directory.path());
+    WriteBatch first;
+    first.put("one", "1");
+    appendEncodedBatch(wal_path, 1, first);
+    WriteBatch second;
+    second.put("two", "2");
+    appendEncodedBatch(wal_path, 3, second);
+
+    DB::Handle db;
+    ASSERT_EQ(DB::open({}, directory.path(), &db).code(),
+              StatusCode::kCorruption);
+    ASSERT_TRUE(db == nullptr);
+  }
 }
 
 TEST(secondOpenIsBusyUntilFirstHandleIsReleased) {

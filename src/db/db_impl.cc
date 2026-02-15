@@ -10,7 +10,10 @@
 #include <utility>
 
 #include "db/filename.h"
+#include "db/write_batch_codec.h"
 #include "db/write_batch_internal.h"
+#include "wal/wal_reader.h"
+#include "wal/wal_writer.h"
 
 namespace lsmtree {
 namespace {
@@ -106,9 +109,12 @@ void FileLock::reset() noexcept {
   fd_ = -1;
 }
 
+DBImpl::~DBImpl() = default;
+
 Status DBImpl::open(const DBOptions& options,
                     const std::filesystem::path& directory, DB::Handle* db) {
   if (db == nullptr) return Status::invalidArgument("db must not be null");
+  *db = nullptr;
   if (options.write_buffer_size == 0) {
     return Status::invalidArgument("write_buffer_size must be positive");
   }
@@ -123,15 +129,89 @@ Status DBImpl::open(const DBOptions& options,
   status = acquireDatabaseLock(directory, impl->lock_);
   if (!status.ok()) return status;
 
+  impl->directory_ = directory;
+  status = impl->recoverWal();
+  if (!status.ok()) return status;
+
+  status = WalWriter::open(walFileName(directory), impl->wal_);
+  if (!status.ok()) return status;
+
   *db = std::move(impl);
   return Status::success();
 }
 
 Status DBImpl::write(const WriteOptions& options, const WriteBatch& batch) {
-  static_cast<void>(options);  // WAL 接入后由它实现 durability 语义
+  if (batch.empty()) return Status::success();
 
   // 在同一把写锁内按记录顺序应用整个 batch
   std::unique_lock<std::shared_mutex> lock(mutex_);
+  const SequenceNumber first_sequence = last_sequence_ + 1U;
+
+  std::string payload;
+  Status status = WriteBatchCodec::encode(batch, first_sequence, payload);
+  if (!status.ok()) return status;
+
+  // 先记录 WAL 再更新内存 避免内存状态领先于日志
+  status = wal_->append(payload);
+  if (!status.ok()) return status;
+
+  // kSync 在修改内存前等待日志持久化
+  if (options.durability == Durability::kSync) {
+    status = wal_->sync();
+    if (!status.ok()) return status;
+  }
+
+  applyBatch(batch);
+  last_sequence_ += batch.count();
+  return Status::success();
+}
+
+Status DBImpl::recoverWal() {
+  const std::filesystem::path path = walFileName(directory_);
+  std::error_code error;
+  const bool exists = std::filesystem::exists(path, error);
+  if (error) return filesystemError("stat", path, error);
+  if (!exists) return Status::success();
+
+  std::unique_ptr<WalReader> reader;
+  Status status = WalReader::open(path, reader);
+  if (!status.ok()) return status;
+
+  // 按日志顺序重放 batch 并校验 sequence 连续递增
+  while (true) {
+    std::string payload;
+    WalReadResult result = WalReadResult::kEnd;
+    status = reader->readNext(payload, result);
+    if (!status.ok()) return status;
+    if (result == WalReadResult::kEnd) break;
+
+    WriteBatch batch;
+    SequenceNumber first_sequence = 0;
+    status = WriteBatchCodec::decode(payload, first_sequence, batch);
+    if (!status.ok()) return status;
+    if (first_sequence != last_sequence_ + 1U) {
+      return Status::corruption("write batch sequence is not contiguous");
+    }
+
+    applyBatch(batch);
+    last_sequence_ += batch.count();
+  }
+
+  const std::uint64_t valid_bytes = reader->validBytes();
+  reader.reset();
+
+  const std::uintmax_t file_size = std::filesystem::file_size(path, error);
+  if (error) return filesystemError("stat", path, error);
+  // 丢弃崩溃留下的不完整尾部 让后续 append 紧接最后一条完整记录
+  if (file_size > valid_bytes) {
+    std::filesystem::resize_file(path, valid_bytes, error);
+    if (error) return filesystemError("truncate", path, error);
+  }
+
+  return Status::success();
+}
+
+void DBImpl::applyBatch(const WriteBatch& batch) {
   for (const auto& operation : batch.rep_->operations) {
     if (operation.type == WriteBatch::Rep::OperationType::kPut) {
       data_[operation.key] = operation.value;
@@ -139,7 +219,6 @@ Status DBImpl::write(const WriteOptions& options, const WriteBatch& batch) {
       data_.erase(operation.key);
     }
   }
-  return Status::success();
 }
 
 Status DBImpl::get(const ReadOptions& options, Slice key, std::string* value) const {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <shared_mutex>
@@ -27,12 +28,15 @@ class FileLock {
   int fd_ = -1;
 };
 
+class WalWriter;
+
 class DBImpl final : public DB {
  public:
   static Status open(const DBOptions& options,
                      const std::filesystem::path& directory, DB::Handle* db);
 
   DBImpl() = default;
+  ~DBImpl() override;
 
   Status write(const WriteOptions& options,
                const WriteBatch& batch) override;
@@ -43,7 +47,13 @@ class DBImpl final : public DB {
                      std::unique_ptr<Iterator>* iterator) const override;
 
  private:
+  Status recoverWal();
+  void applyBatch(const WriteBatch& batch);
+
+  std::filesystem::path directory_;
   FileLock lock_;
+  std::unique_ptr<WalWriter> wal_;
+  std::uint64_t last_sequence_ = 0;
   mutable std::shared_mutex mutex_;
   std::map<std::string, std::string, std::less<>> data_;
 };
