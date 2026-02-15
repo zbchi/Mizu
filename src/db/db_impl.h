@@ -1,10 +1,9 @@
 #pragma once
 
-#include <cstdint>
-#include <map>
 #include <memory>
 #include <shared_mutex>
 
+#include "db/memtable.h"
 #include "lsmtree/db.h"
 
 namespace lsmtree {
@@ -48,14 +47,14 @@ class DBImpl final : public DB {
 
  private:
   Status recoverWal();
-  void applyBatch(const WriteBatch& batch);
+  void applyBatch(const WriteBatch& batch, SequenceNumber first_sequence);
 
   std::filesystem::path directory_;
   FileLock lock_;
   std::unique_ptr<WalWriter> wal_;
-  std::uint64_t last_sequence_ = 0;
+  SequenceNumber last_sequence_ = 0;
   mutable std::shared_mutex mutex_;
-  std::map<std::string, std::string, std::less<>> data_;
+  MemTable memtable_;
 };
 
 }

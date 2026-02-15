@@ -265,16 +265,44 @@ TEST(secondOpenIsBusyUntilFirstHandleIsReleased) {
   ASSERT_TRUE(second != nullptr);
 }
 
-TEST(snapshotAndIteratorAreExplicitlyUnsupported) {
+TEST(snapshotWorksAndIteratorRemainsUnsupported) {
   TempDirectory directory;
   DB::Handle db = openOrCreate(directory.path());
   SnapshotHandle snapshot;
   std::unique_ptr<Iterator> iterator;
 
-  ASSERT_EQ(db->newSnapshot(&snapshot).code(), StatusCode::kNotSupported);
-  ASSERT_TRUE(!snapshot);
+  ASSERT_OK(db->put({}, "key", "before"));
+  ASSERT_OK(db->newSnapshot(&snapshot));
+  ASSERT_TRUE(snapshot != nullptr);
+  ASSERT_OK(db->put({}, "key", "after"));
+
+  std::string value;
+  ASSERT_OK(db->get({}, "key", &value));
+  ASSERT_EQ(value, "after");
+  ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
+  ASSERT_EQ(value, "before");
+
+  ASSERT_OK(db->erase({}, "key"));
+  ASSERT_EQ(db->get({}, "key", &value).code(), StatusCode::kNotFound);
+  ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
+  ASSERT_EQ(value, "before");
+
   ASSERT_EQ(db->newIterator({}, &iterator).code(), StatusCode::kNotSupported);
   ASSERT_TRUE(!iterator);
+}
+
+TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
+  TempDirectory directory;
+  DB::Handle db = openOrCreate(directory.path());
+  SnapshotHandle snapshot;
+  ASSERT_OK(db->newSnapshot(&snapshot));
+
+  ASSERT_OK(db->put({}, "key", "value"));
+  std::string value = "unchanged";
+  ASSERT_EQ(db->get(ReadOptions{snapshot}, "key", &value).code(),
+            StatusCode::kNotFound);
+  ASSERT_EQ(value, "unchanged");
+  ASSERT_EQ(db->newSnapshot(nullptr).code(), StatusCode::kInvalidArgument);
 }
 
 }

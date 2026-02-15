@@ -18,6 +18,14 @@
 namespace lsmtree {
 namespace {
 
+// 快照只保存创建时已经提交的最大 sequence
+class SnapshotImpl final : public Snapshot {
+ public:
+  explicit SnapshotImpl(SequenceNumber sequence) : sequence(sequence) {}
+
+  SequenceNumber sequence;
+};
+
 Status filesystemError(const char* operation, const std::filesystem::path& path,
                        const std::error_code& error) {
   return Status::ioError(std::string(operation) + " " + path.string() + ": " +
@@ -161,7 +169,7 @@ Status DBImpl::write(const WriteOptions& options, const WriteBatch& batch) {
     if (!status.ok()) return status;
   }
 
-  applyBatch(batch);
+  applyBatch(batch, first_sequence);
   last_sequence_ += batch.count();
   return Status::success();
 }
@@ -193,7 +201,7 @@ Status DBImpl::recoverWal() {
       return Status::corruption("write batch sequence is not contiguous");
     }
 
-    applyBatch(batch);
+    applyBatch(batch, first_sequence);
     last_sequence_ += batch.count();
   }
 
@@ -211,33 +219,50 @@ Status DBImpl::recoverWal() {
   return Status::success();
 }
 
-void DBImpl::applyBatch(const WriteBatch& batch) {
+void DBImpl::applyBatch(const WriteBatch& batch,
+                        SequenceNumber first_sequence) {
+  // batch 中的每个操作依次占用一个 sequence
+  SequenceNumber sequence = first_sequence;
   for (const auto& operation : batch.rep_->operations) {
     if (operation.type == WriteBatch::Rep::OperationType::kPut) {
-      data_[operation.key] = operation.value;
+      memtable_.add(sequence, ValueType::kValue, operation.key,
+                    operation.value);
     } else {
-      data_.erase(operation.key);
+      memtable_.add(sequence, ValueType::kDeletion, operation.key, {});
     }
+    ++sequence;
   }
 }
 
 Status DBImpl::get(const ReadOptions& options, Slice key, std::string* value) const {
   if (value == nullptr) return Status::invalidArgument("value must not be null");
+
+  SequenceNumber visible_sequence = 0;
   if (options.snapshot) {
-    return Status::notSupported("snapshots are not implemented yet");
+    const auto snapshot =
+        std::dynamic_pointer_cast<const SnapshotImpl>(options.snapshot);
+    if (!snapshot) {
+      return Status::invalidArgument("invalid snapshot");
+    }
+    visible_sequence = snapshot->sequence;
   }
 
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  const auto it = data_.find(key);
-  if (it == data_.end()) return Status::notFound("key does not exist");
+  if (!options.snapshot) visible_sequence = last_sequence_;
 
-  *value = it->second;
-  return Status::success();
+  const LookupResult result = memtable_.get(key, visible_sequence, value);
+  if (result == LookupResult::kValue) return Status::success();
+  return Status::notFound("key does not exist");
 }
 
 Status DBImpl::newSnapshot(SnapshotHandle* snapshot) const {
-  static_cast<void>(snapshot);
-  return Status::notSupported("snapshots are not implemented yet");
+  if (snapshot == nullptr) {
+    return Status::invalidArgument("snapshot must not be null");
+  }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  *snapshot = std::make_shared<SnapshotImpl>(last_sequence_);
+  return Status::success();
 }
 
 Status DBImpl::newIterator(const ReadOptions& options,
