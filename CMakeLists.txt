@@ -38,6 +38,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/db_test.cc
     tests/db/internal_key_test.cc
     tests/db/memtable_test.cc
+    tests/db/skiplist_test.cc
     tests/db/write_batch_codec_test.cc
     tests/util/coding_test.cc
     tests/util/crc32c_test.cc
