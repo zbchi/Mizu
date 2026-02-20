@@ -7,6 +7,10 @@
 
 namespace lsmtree {
 
+// 在 4 字节缓冲区读写 little-endian 整数
+void encodeFixed32(char* dst, std::uint32_t value) noexcept;
+std::uint32_t decodeFixed32(const char* src) noexcept;
+
 // 按小端序将 value 追加到 dst
 void putFixed32(std::string& dst, std::uint32_t value);
 void putFixed64(std::string& dst, std::uint64_t value);

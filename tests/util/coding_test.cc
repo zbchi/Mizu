@@ -8,6 +8,18 @@
 namespace lsmtree {
 namespace {
 
+TEST(fixed32RawBufferUsesLittleEndianAndRoundTrips) {
+  char encoded[sizeof(std::uint32_t)];
+  encodeFixed32(encoded, 0x12345678U);
+
+  const std::string expected_bytes = {static_cast<char>(0x78),
+                                      static_cast<char>(0x56),
+                                      static_cast<char>(0x34),
+                                      static_cast<char>(0x12)};
+  ASSERT_EQ(std::string(encoded, sizeof(encoded)), expected_bytes);
+  ASSERT_EQ(decodeFixed32(encoded), 0x12345678U);
+}
+
 TEST(fixed32UsesLittleEndianAndRoundTrips) {
   std::string encoded;
   putFixed32(encoded, 0x12345678U);

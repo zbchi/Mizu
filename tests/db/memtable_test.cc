@@ -43,5 +43,31 @@ TEST(memtableKeepsBinaryKeysAndEmptyValues) {
   ASSERT_EQ(value, "");
 }
 
+TEST(memtableCopiesKeysAndValuesIntoOwnedStorage) {
+  MemTable table;
+  std::string key = "key";
+  std::string value = "value";
+  table.add(1, ValueType::kValue, key, value);
+
+  key.assign("changed-key");
+  value.assign("changed-value");
+
+  std::string stored;
+  ASSERT_EQ(table.get("key", 1, &stored), LookupResult::kValue);
+  ASSERT_EQ(stored, "value");
+}
+
+TEST(memtableLookupDoesNotCrossUserKeyBoundaries) {
+  MemTable table;
+  table.add(3, ValueType::kValue, "alpha", "a");
+  table.add(2, ValueType::kValue, "charlie", "c");
+
+  std::string value = "unchanged";
+  ASSERT_EQ(table.get("bravo", 10, &value), LookupResult::kAbsent);
+  ASSERT_EQ(value, "unchanged");
+  ASSERT_EQ(table.get("zulu", 10, &value), LookupResult::kAbsent);
+  ASSERT_EQ(value, "unchanged");
+}
+
 }
 }
