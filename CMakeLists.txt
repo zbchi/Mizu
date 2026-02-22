@@ -12,6 +12,7 @@ add_library(lsmtree
   src/db/memtable.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
+  src/table/block_builder.cc
   src/util/arena.cc
   src/util/coding.cc
   src/util/crc32c.cc
@@ -40,6 +41,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/memtable_test.cc
     tests/db/skiplist_test.cc
     tests/db/write_batch_codec_test.cc
+    tests/table/block_builder_test.cc
     tests/util/coding_test.cc
     tests/util/crc32c_test.cc
     tests/util/arena_test.cc
