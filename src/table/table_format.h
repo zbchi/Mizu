@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include "lsmtree/db.h"
+
 namespace lsmtree {
 
 inline constexpr char kSSTableMagic[] = "LSMTREE1";
@@ -26,8 +28,14 @@ struct BlockHandle {
 // 以固定长度编码 block 位置和大小
 void putBlockHandle(std::string& destination, const BlockHandle& handle);
 
+// 从输入开头解码固定长度的 block 位置和大小
+bool getBlockHandle(Slice& input, BlockHandle& handle);
+
 // 以固定长度编码包含索引位置的 footer
 void putSSTableFooter(std::string& destination,
                       const BlockHandle& index_handle);
+
+// 解码并校验完整的 SSTable footer
+Status decodeSSTableFooter(Slice encoded, BlockHandle& index_handle);
 
 }
