@@ -3,16 +3,11 @@
 #include <string>
 
 #include "db/internal_key.h"
+#include "db/lookup_result.h"
 #include "db/skiplist.h"
 #include "util/arena.h"
 
 namespace lsmtree {
-
-enum class LookupResult {
-  kAbsent,
-  kValue,
-  kDeleted,
-};
 
 // 单个只增不删的内存有序表 读写同步由调用方负责
 class MemTable {

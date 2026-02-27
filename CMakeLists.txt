@@ -15,6 +15,7 @@ add_library(lsmtree
   src/table/block_iterator.cc
   src/table/block_builder.cc
   src/table/sstable_builder.cc
+  src/table/sstable_reader.cc
   src/table/table_io.cc
   src/table/table_format.cc
   src/util/arena.cc
@@ -48,6 +49,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/table/block_iterator_test.cc
     tests/table/block_builder_test.cc
     tests/table/sstable_builder_test.cc
+    tests/table/sstable_reader_test.cc
     tests/table/table_io_test.cc
     tests/util/coding_test.cc
     tests/util/crc32c_test.cc
