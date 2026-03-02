@@ -16,31 +16,30 @@ std::string numberedKey(std::uint32_t number) {
   return key;
 }
 
-std::vector<Slice> slicesOf(const std::vector<std::string>& keys) {
-  std::vector<Slice> slices;
-  slices.reserve(keys.size());
-  for (const std::string& key : keys) slices.emplace_back(key);
-  return slices;
+std::string buildFilter(const std::vector<std::string>& keys) {
+  BloomFilterBuilder builder;
+  for (const std::string& key : keys) builder.add(key);
+  return builder.finish();
 }
 
 }
 
 TEST(emptyBloomFilterRejectsEveryKey) {
-  const std::string encoded = BloomFilter::create({});
+  const std::string encoded = buildFilter({});
   ASSERT_EQ(encoded.size(), 9U);
-  ASSERT_TRUE(!BloomFilter::mayContain("hello", encoded));
-  ASSERT_TRUE(!BloomFilter::mayContain("", encoded));
+  ASSERT_TRUE(!bloomFilterMayContain("hello", encoded));
+  ASSERT_TRUE(!bloomFilterMayContain("", encoded));
 }
 
 TEST(bloomFilterMatchesInsertedBinaryKeys) {
   const std::vector<std::string> keys = {"hello", "world",
                                          std::string("a\0b", 3), ""};
-  const std::string encoded = BloomFilter::create(slicesOf(keys));
+  const std::string encoded = buildFilter(keys);
 
   for (const std::string& key : keys) {
-    ASSERT_TRUE(BloomFilter::mayContain(key, encoded));
+    ASSERT_TRUE(bloomFilterMayContain(key, encoded));
   }
-  ASSERT_TRUE(!BloomFilter::mayContain("definitely-missing", encoded));
+  ASSERT_TRUE(!bloomFilterMayContain("definitely-missing", encoded));
 }
 
 TEST(bloomFilterHasNoFalseNegativesAcrossSizes) {
@@ -51,10 +50,10 @@ TEST(bloomFilterHasNoFalseNegativesAcrossSizes) {
       keys.push_back(numberedKey(static_cast<std::uint32_t>(index)));
     }
 
-    const std::string encoded = BloomFilter::create(slicesOf(keys));
+    const std::string encoded = buildFilter(keys);
     ASSERT_TRUE(encoded.size() <= (count * 10U + 7U) / 8U + 9U);
     for (const std::string& key : keys) {
-      ASSERT_TRUE(BloomFilter::mayContain(key, encoded));
+      ASSERT_TRUE(bloomFilterMayContain(key, encoded));
     }
   }
 }
@@ -65,11 +64,11 @@ TEST(bloomFilterKeepsFalsePositiveRateBelowTwoPercent) {
   for (std::uint32_t index = 0; index < 1000; ++index) {
     keys.push_back(numberedKey(index));
   }
-  const std::string encoded = BloomFilter::create(slicesOf(keys));
+  const std::string encoded = buildFilter(keys);
 
   std::size_t false_positives = 0;
   for (std::uint32_t index = 1000000; index < 1010000; ++index) {
-    if (BloomFilter::mayContain(numberedKey(index), encoded)) {
+    if (bloomFilterMayContain(numberedKey(index), encoded)) {
       ++false_positives;
     }
   }
@@ -77,14 +76,14 @@ TEST(bloomFilterKeepsFalsePositiveRateBelowTwoPercent) {
 }
 
 TEST(bloomFilterTreatsUnknownEncodingAsPossibleMatch) {
-  ASSERT_TRUE(!BloomFilter::mayContain("key", {}));
+  ASSERT_TRUE(bloomFilterMayContain("key", {}));
 
   const std::string truncated(1, '\x06');
-  ASSERT_TRUE(BloomFilter::mayContain("key", truncated));
+  ASSERT_TRUE(bloomFilterMayContain("key", truncated));
 
   std::string future_encoding(8, '\0');
   future_encoding.push_back(static_cast<char>(31));
-  ASSERT_TRUE(BloomFilter::mayContain("key", future_encoding));
+  ASSERT_TRUE(bloomFilterMayContain("key", future_encoding));
 }
 
 }

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "db/internal_key.h"
+#include "table/bloom_filter.h"
 #include "table/table_format.h"
 #include "test.h"
 #include "util/coding.h"
@@ -96,7 +97,12 @@ BlockHandle decodeBlockHandle(Slice encoded) {
   return handle;
 }
 
-BlockHandle decodeFooter(Slice file) {
+struct FooterHandles {
+  BlockHandle filter;
+  BlockHandle index;
+};
+
+FooterHandles decodeFooter(Slice file) {
   ASSERT_TRUE(file.size() >= kSSTableFooterSize);
   Slice footer = file.substr(file.size() - kSSTableFooterSize);
   ASSERT_EQ(footer.substr(0, kSSTableMagicSize),
@@ -109,7 +115,11 @@ BlockHandle decodeFooter(Slice file) {
   ASSERT_TRUE(getFixed32(footer, reserved));
   ASSERT_EQ(version, kSSTableVersion);
   ASSERT_EQ(reserved, 0U);
-  return decodeBlockHandle(footer);
+  FooterHandles handles;
+  handles.filter = decodeBlockHandle(footer.substr(0, kBlockHandleSize));
+  footer.remove_prefix(kBlockHandleSize);
+  handles.index = decodeBlockHandle(footer);
+  return handles;
 }
 
 Slice checkedBlockPayload(Slice file, const BlockHandle& handle) {
@@ -165,9 +175,18 @@ TEST(sstableBuilderWritesDataIndexAndFooter) {
   ASSERT_EQ(meta.smallest_key, records.front().first);
   ASSERT_EQ(meta.largest_key, records.back().first);
 
-  const BlockHandle index_handle = decodeFooter(file);
+  const FooterHandles handles = decodeFooter(file);
+  const Slice filter = checkedBlockPayload(file, handles.filter);
+  ASSERT_TRUE(bloomFilterMayContain("alpha", filter));
+  ASSERT_TRUE(bloomFilterMayContain("beta", filter));
+  ASSERT_TRUE(!bloomFilterMayContain("missing", filter));
+  ASSERT_EQ(handles.filter.offset + handles.filter.size + kBlockTrailerSize,
+            handles.index.offset);
+  ASSERT_EQ(handles.index.offset + handles.index.size + kBlockTrailerSize,
+            file.size() - kSSTableFooterSize);
+
   const auto index_entries =
-      decodeBlockEntries(checkedBlockPayload(file, index_handle));
+      decodeBlockEntries(checkedBlockPayload(file, handles.index));
   ASSERT_EQ(index_entries.size(), records.size());
 
   for (std::size_t index = 0; index < records.size(); ++index) {
@@ -193,9 +212,11 @@ TEST(sstableBuilderWritesAnEmptyTable) {
   ASSERT_TRUE(meta.smallest_key.empty());
   ASSERT_TRUE(meta.largest_key.empty());
 
-  const BlockHandle index_handle = decodeFooter(file);
+  const FooterHandles handles = decodeFooter(file);
+  ASSERT_TRUE(!bloomFilterMayContain(
+      "anything", checkedBlockPayload(file, handles.filter)));
   ASSERT_TRUE(
-      decodeBlockEntries(checkedBlockPayload(file, index_handle)).empty());
+      decodeBlockEntries(checkedBlockPayload(file, handles.index)).empty());
 }
 
 TEST(sstableBuilderOwnsItsTemporaryFileLifecycle) {

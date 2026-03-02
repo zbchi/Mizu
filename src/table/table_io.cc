@@ -65,6 +65,7 @@ Status validateBlockHandle(std::uint64_t file_size,
 }
 
 Status readSSTableFooter(int fd, std::uint64_t file_size,
+                         BlockHandle& filter_handle,
                          BlockHandle& index_handle) {
   if (file_size < kSSTableFooterSize) {
     return Status::corruption("SSTable is shorter than its footer");
@@ -75,14 +76,19 @@ Status readSSTableFooter(int fd, std::uint64_t file_size,
                               kSSTableFooterSize, encoded);
   if (!status.ok()) return status;
 
-  BlockHandle decoded_handle;
-  status = decodeSSTableFooter(encoded, decoded_handle);
+  BlockHandle decoded_filter_handle;
+  BlockHandle decoded_index_handle;
+  status = decodeSSTableFooter(encoded, decoded_filter_handle,
+                               decoded_index_handle);
   if (!status.ok()) return status;
 
-  status = validateBlockHandle(file_size, decoded_handle);
+  status = validateBlockHandle(file_size, decoded_filter_handle);
+  if (!status.ok()) return status;
+  status = validateBlockHandle(file_size, decoded_index_handle);
   if (!status.ok()) return status;
 
-  index_handle = decoded_handle;
+  filter_handle = decoded_filter_handle;
+  index_handle = decoded_index_handle;
   return Status::success();
 }
 

@@ -59,10 +59,14 @@ Status SSTableBuilder::add(Slice internal_key, Slice value) {
   if (!error_.ok()) return error_;
   assert(state_ == State::kBuilding);
 
-  [[maybe_unused]] ParsedInternalKey parsed{};
-  assert(parseInternalKey(internal_key, parsed));
+  ParsedInternalKey parsed{};
+  if (!parseInternalKey(internal_key, parsed)) {
+    return Status::invalidArgument("invalid SSTable internal key");
+  }
   assert(entry_count_ == 0 ||
          InternalKeyLess{}(Slice(last_key_), internal_key));
+
+  bloom_filter_.add(parsed.user_key);
 
   if (entry_count_ == 0) {
     first_key_.assign(internal_key.data(), internal_key.size());
@@ -84,13 +88,17 @@ Status SSTableBuilder::finish(SSTableMeta& meta) {
   Status status = flushDataBlock();
   if (!status.ok()) return status;
 
+  BlockHandle filter_handle;
+  status = writeBlock(bloom_filter_.finish(), filter_handle);
+  if (!status.ok()) return status;
+
   BlockHandle index_handle;
-  status = writeBlock(index_block_, index_handle);
+  status = writeBlock(index_block_.finish(), index_handle);
   if (!status.ok()) return status;
 
   std::string footer;
   footer.reserve(kSSTableFooterSize);
-  putSSTableFooter(footer, index_handle);
+  putSSTableFooter(footer, filter_handle, index_handle);
   status = writeAll(footer);
   if (!status.ok()) return status;
   file_offset_ += footer.size();
@@ -129,7 +137,7 @@ Status SSTableBuilder::flushDataBlock() {
   if (data_block_.empty()) return Status::success();
 
   BlockHandle handle;
-  Status status = writeBlock(data_block_, handle);
+  Status status = writeBlock(data_block_.finish(), handle);
   if (!status.ok()) return status;
 
   std::string encoded_handle;
@@ -140,9 +148,7 @@ Status SSTableBuilder::flushDataBlock() {
   return Status::success();
 }
 
-Status SSTableBuilder::writeBlock(BlockBuilder& block, BlockHandle& handle) {
-  const Slice payload = block.finish();
-
+Status SSTableBuilder::writeBlock(Slice payload, BlockHandle& handle) {
   std::string block_contents(payload);
   block_contents.push_back(static_cast<char>(kNoCompression));
   const std::uint32_t checksum = crc32c(block_contents);

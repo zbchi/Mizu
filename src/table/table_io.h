@@ -8,8 +8,9 @@
 
 namespace lsmtree {
 
-// 读取并校验文件末尾的 SSTable footer
+// 读取并校验文件末尾的 SSTable footer 及其中的 block handle
 Status readSSTableFooter(int fd, std::uint64_t file_size,
+                         BlockHandle& filter_handle,
                          BlockHandle& index_handle);
 
 // 读取 footer 前的 block payload 并按需校验 checksum

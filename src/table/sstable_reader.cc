@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "table/block_iterator.h"
+#include "table/bloom_filter.h"
 #include "table/table_format.h"
 #include "table/table_io.h"
 
@@ -51,11 +52,17 @@ Status SSTableReader::open(const std::filesystem::path& path,
   }
   opened->file_size_ = static_cast<std::uint64_t>(file_info.st_size);
 
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  Status status = readSSTableFooter(fd, opened->file_size_, index_handle);
+  Status status = readSSTableFooter(fd, opened->file_size_, filter_handle,
+                                    index_handle);
   if (!status.ok()) return status;
 
-  // index block 决定后续所有寻址所以打开文件时总是校验 checksum
+  // filter 和 index 会影响后续寻址 打开时总是校验 checksum
+  status = readBlock(fd, opened->file_size_, filter_handle, true,
+                     opened->filter_block_);
+  if (!status.ok()) return status;
+
   status = readBlock(fd, opened->file_size_, index_handle, true,
                      opened->index_block_);
   if (!status.ok()) return status;
@@ -79,6 +86,11 @@ Status SSTableReader::get(const ReadOptions& options, Slice user_key,
                           SequenceNumber visible_sequence, LookupResult& result,
                           std::string& value) const {
   assert(visible_sequence <= kMaxSequenceNumber);
+
+  if (!bloomFilterMayContain(user_key, filter_block_)) {
+    result = LookupResult::kAbsent;
+    return Status::success();
+  }
 
   // kValue 是同一 sequence 下最大的 ValueType 也就是查询下界
   const std::string lookup_key =

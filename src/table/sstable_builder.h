@@ -8,6 +8,7 @@
 
 #include "lsmtree/db.h"
 #include "table/block_builder.h"
+#include "table/bloom_filter.h"
 #include "table/table_format.h"
 
 namespace lsmtree {
@@ -59,7 +60,7 @@ class SSTableBuilder final {
   Status flushDataBlock();
 
   // 写出 block payload 及带校验和的 trailer
-  Status writeBlock(BlockBuilder& block, BlockHandle& handle);
+  Status writeBlock(Slice payload, BlockHandle& handle);
 
   // 完整写入数据并处理短写
   Status writeAll(Slice data);
@@ -77,6 +78,7 @@ class SSTableBuilder final {
   Status error_;
   BlockBuilder data_block_;
   BlockBuilder index_block_;
+  BloomFilterBuilder bloom_filter_;
   std::uint64_t file_offset_ = 0;
   std::uint64_t entry_count_ = 0;
   std::string first_key_;

@@ -76,14 +76,20 @@ std::unique_ptr<SSTableReader> openReader(const std::filesystem::path& path) {
   return reader;
 }
 
-BlockHandle readIndexHandle(const std::filesystem::path& path) {
+struct FooterHandles {
+  BlockHandle filter;
+  BlockHandle index;
+};
+
+FooterHandles readFooterHandles(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY);
   ASSERT_TRUE(fd >= 0);
 
-  BlockHandle handle;
-  ASSERT_OK(readSSTableFooter(fd, std::filesystem::file_size(path), handle));
+  FooterHandles handles;
+  ASSERT_OK(readSSTableFooter(fd, std::filesystem::file_size(path),
+                             handles.filter, handles.index));
   ASSERT_TRUE(::close(fd) == 0);
-  return handle;
+  return handles;
 }
 
 BlockHandle readFirstDataHandle(const std::filesystem::path& path) {
@@ -91,8 +97,10 @@ BlockHandle readFirstDataHandle(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY);
   ASSERT_TRUE(fd >= 0);
 
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_OK(readSSTableFooter(fd, file_size, index_handle));
+  ASSERT_OK(
+      readSSTableFooter(fd, file_size, filter_handle, index_handle));
   std::string index_block;
   ASSERT_OK(readBlock(fd, file_size, index_handle, true, index_block));
   ASSERT_TRUE(::close(fd) == 0);
@@ -215,8 +223,20 @@ TEST(sstableReaderRejectsCorruptIndexDuringOpen) {
   ReaderTempDirectory directory;
   const auto path =
       buildTable(directory, {{"key", 1, ValueType::kValue, "value"}});
-  const BlockHandle index_handle = readIndexHandle(path);
-  flipByte(path, index_handle.offset);
+  const FooterHandles handles = readFooterHandles(path);
+  flipByte(path, handles.index.offset);
+
+  std::unique_ptr<SSTableReader> reader;
+  ASSERT_EQ(SSTableReader::open(path, reader).code(), StatusCode::kCorruption);
+  ASSERT_TRUE(reader == nullptr);
+}
+
+TEST(sstableReaderRejectsCorruptFilterDuringOpen) {
+  ReaderTempDirectory directory;
+  const auto path =
+      buildTable(directory, {{"key", 1, ValueType::kValue, "value"}});
+  const FooterHandles handles = readFooterHandles(path);
+  flipByte(path, handles.filter.offset);
 
   std::unique_ptr<SSTableReader> reader;
   ASSERT_EQ(SSTableReader::open(path, reader).code(), StatusCode::kCorruption);

@@ -61,27 +61,31 @@ int openReadOnly(const std::filesystem::path& path) {
 
 TEST(tableFormatDecodesFooter) {
   std::string encoded;
-  putSSTableFooter(encoded, BlockHandle{12, 34});
+  putSSTableFooter(encoded, BlockHandle{1, 2}, BlockHandle{12, 34});
 
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_OK(decodeSSTableFooter(encoded, index_handle));
+  ASSERT_OK(decodeSSTableFooter(encoded, filter_handle, index_handle));
+  ASSERT_EQ(filter_handle.offset, 1U);
+  ASSERT_EQ(filter_handle.size, 2U);
   ASSERT_EQ(index_handle.offset, 12U);
   ASSERT_EQ(index_handle.size, 34U);
 }
 
 TEST(tableFormatRejectsInvalidFooter) {
   std::string encoded;
-  putSSTableFooter(encoded, BlockHandle{12, 34});
+  putSSTableFooter(encoded, BlockHandle{1, 2}, BlockHandle{12, 34});
 
   encoded[0] = 'X';
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_EQ(decodeSSTableFooter(encoded, index_handle).code(),
+  ASSERT_EQ(decodeSSTableFooter(encoded, filter_handle, index_handle).code(),
             StatusCode::kCorruption);
 
   encoded.clear();
-  putSSTableFooter(encoded, BlockHandle{12, 34});
+  putSSTableFooter(encoded, BlockHandle{1, 2}, BlockHandle{12, 34});
   encoded[kSSTableMagicSize] = 2;
-  ASSERT_EQ(decodeSSTableFooter(encoded, index_handle).code(),
+  ASSERT_EQ(decodeSSTableFooter(encoded, filter_handle, index_handle).code(),
             StatusCode::kNotSupported);
 }
 
@@ -101,9 +105,12 @@ TEST(tableIoReadsFooterAndBlocks) {
   const std::uint64_t file_size = std::filesystem::file_size(path);
   const int fd = openReadOnly(path);
 
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_OK(readSSTableFooter(fd, file_size, index_handle));
+  ASSERT_OK(readSSTableFooter(fd, file_size, filter_handle, index_handle));
   std::string payload;
+  ASSERT_OK(readBlock(fd, file_size, filter_handle, true, payload));
+  ASSERT_TRUE(!payload.empty());
   ASSERT_OK(readBlock(fd, file_size, index_handle, true, payload));
   ASSERT_TRUE(!payload.empty());
   ASSERT_TRUE(::close(fd) == 0);
@@ -131,8 +138,9 @@ TEST(tableIoDetectsCorruptBlockChecksum) {
   const std::uint64_t file_size = std::filesystem::file_size(path);
   const int fd = openReadOnly(path);
 
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_OK(readSSTableFooter(fd, file_size, index_handle));
+  ASSERT_OK(readSSTableFooter(fd, file_size, filter_handle, index_handle));
   std::string payload;
   ASSERT_OK(readBlock(fd, file_size, index_handle, true, payload));
   ASSERT_TRUE(::close(fd) == 0);
@@ -160,8 +168,9 @@ TEST(tableIoReportsShortReadAsCorruption) {
   file.close();
 
   const int fd = openReadOnly(path);
+  BlockHandle filter_handle;
   BlockHandle index_handle;
-  ASSERT_EQ(readSSTableFooter(fd, 5, index_handle).code(),
+  ASSERT_EQ(readSSTableFooter(fd, 5, filter_handle, index_handle).code(),
             StatusCode::kCorruption);
   ASSERT_TRUE(::close(fd) == 0);
 }

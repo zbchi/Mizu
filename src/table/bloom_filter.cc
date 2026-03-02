@@ -55,10 +55,8 @@ std::uint32_t rotatedDelta(std::uint32_t hash) noexcept {
   return (hash >> 17U) | (hash << 15U);
 }
 
-}
-
-std::string BloomFilter::create(const std::vector<Slice>& keys) {
-  std::size_t bit_count = keys.size() * kBloomBitsPerKey;
+std::string buildFilter(const std::vector<std::uint32_t>& hashes) {
+  std::size_t bit_count = hashes.size() * kBloomBitsPerKey;
   // 小集合至少使用 64 bit 避免误判率过高
   bit_count = std::max(bit_count, kMinimumBloomBits);
   const std::size_t byte_count = (bit_count + 7U) / 8U;
@@ -67,8 +65,7 @@ std::string BloomFilter::create(const std::vector<Slice>& keys) {
   std::string encoded(byte_count, '\0');
   encoded.push_back(static_cast<char>(kBloomProbes));
 
-  for (const Slice key : keys) {
-    std::uint32_t hash = bloomHash(key);
+  for (std::uint32_t hash : hashes) {
     // 用一次基础 hash 和固定增量生成所有探测位置
     const std::uint32_t delta = rotatedDelta(hash);
     for (unsigned char probe = 0; probe < kBloomProbes; ++probe) {
@@ -84,8 +81,19 @@ std::string BloomFilter::create(const std::vector<Slice>& keys) {
   return encoded;
 }
 
-bool BloomFilter::mayContain(Slice key, Slice encoded_filter) noexcept {
-  if (encoded_filter.empty()) return false;
+}
+
+void BloomFilterBuilder::add(Slice key) {
+  hashes_.push_back(bloomHash(key));
+}
+
+std::string BloomFilterBuilder::finish() const {
+  return buildFilter(hashes_);
+}
+
+bool bloomFilterMayContain(Slice key, Slice encoded_filter) noexcept {
+  // 零字节不是 builder 产生的合法空 filter 按未知编码保守命中
+  if (encoded_filter.empty()) return true;
   if (encoded_filter.size() == 1) return true;
 
   const std::size_t byte_count = encoded_filter.size() - 1U;

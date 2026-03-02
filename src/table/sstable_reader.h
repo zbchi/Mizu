@@ -34,6 +34,7 @@ class SSTableReader final {
 
   int fd_;
   std::uint64_t file_size_ = 0;
+  std::string filter_block_;
   std::string index_block_;
 };
 
