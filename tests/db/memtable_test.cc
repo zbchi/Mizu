@@ -69,5 +69,51 @@ TEST(memtableLookupDoesNotCrossUserKeyBoundaries) {
   ASSERT_EQ(value, "unchanged");
 }
 
+TEST(memtableIteratorExposesInternalOrder) {
+  MemTable table;
+  table.add(7, ValueType::kValue, "alpha", "new");
+  table.add(5, ValueType::kDeletion, "alpha", {});
+  table.add(3, ValueType::kValue, "alpha", "old");
+  table.add(2, ValueType::kValue, "beta", "value");
+
+  ASSERT_TRUE(!table.empty());
+  ASSERT_TRUE(table.memoryUsage() > 0);
+
+  auto iterator = table.newIterator();
+  iterator.seekToFirst();
+
+  ASSERT_TRUE(iterator.valid());
+  ASSERT_EQ(iterator.internalKey(), encodeInternalKey("alpha", 7,
+                                                       ValueType::kValue));
+  ASSERT_EQ(iterator.value(), "new");
+  iterator.next();
+  ASSERT_TRUE(iterator.valid());
+  ASSERT_EQ(iterator.internalKey(), encodeInternalKey("alpha", 5,
+                                                       ValueType::kDeletion));
+  ASSERT_EQ(iterator.value(), "");
+  iterator.next();
+  ASSERT_TRUE(iterator.valid());
+  ASSERT_EQ(iterator.internalKey(), encodeInternalKey("alpha", 3,
+                                                       ValueType::kValue));
+  ASSERT_EQ(iterator.value(), "old");
+  iterator.next();
+  ASSERT_TRUE(iterator.valid());
+  ASSERT_EQ(iterator.internalKey(), encodeInternalKey("beta", 2,
+                                                       ValueType::kValue));
+  ASSERT_EQ(iterator.value(), "value");
+  iterator.next();
+  ASSERT_TRUE(!iterator.valid());
+}
+
+TEST(emptyMemtableHasNoEntriesDespiteArenaHead) {
+  MemTable table;
+  ASSERT_TRUE(table.empty());
+  ASSERT_TRUE(table.memoryUsage() > 0);
+
+  auto iterator = table.newIterator();
+  iterator.seekToFirst();
+  ASSERT_TRUE(!iterator.valid());
+}
+
 }
 }

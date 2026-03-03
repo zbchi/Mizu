@@ -32,6 +32,16 @@ Slice entryValue(const char* entry) noexcept {
 // Arena 必须先于跳表构造并覆盖跳表的完整生命周期
 MemTable::MemTable() : table_(EntryComparator{}, &arena_) {}
 
+Slice MemTable::Iterator::internalKey() const {
+  assert(valid());
+  return entryInternalKey(iterator_.key());
+}
+
+Slice MemTable::Iterator::value() const {
+  assert(valid());
+  return entryValue(iterator_.key());
+}
+
 // 跳表只按 InternalKey 排序 value 不参与比较
 int MemTable::EntryComparator::operator()(const char* lhs,
                                           const char* rhs) const noexcept {
@@ -66,6 +76,7 @@ void MemTable::add(SequenceNumber sequence, ValueType type, Slice key,
   assert(cursor + value.size() == entry + entry_size);
 
   table_.insert(entry);
+  ++entry_count_;
 }
 
 // 定位不晚于目标序号的第一个版本
