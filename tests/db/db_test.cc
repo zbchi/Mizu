@@ -1,3 +1,7 @@
+#include "lsmtree/db.h"
+
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -5,11 +9,9 @@
 #include <memory>
 #include <string>
 
-#include <unistd.h>
-
 #include "db/filename.h"
+#include "db/manifest.h"
 #include "db/write_batch_codec.h"
-#include "lsmtree/db.h"
 #include "test.h"
 #include "wal/wal_writer.h"
 
@@ -20,7 +22,8 @@ class TempDirectory {
  public:
   TempDirectory() {
     // 组合进程号和单调时钟 避免并行测试共用同一目录
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
     path_ = std::filesystem::temp_directory_path() /
             ("lsmtree-test-" + std::to_string(getpid()) + "-" +
              std::to_string(stamp));
@@ -41,6 +44,15 @@ DB::Handle openOrCreate(const std::filesystem::path& path) {
   DB::Handle db;
   DBOptions options;
   options.open_mode = OpenMode::kOpenOrCreate;
+  ASSERT_OK(DB::open(options, path, &db));
+  return db;
+}
+
+DB::Handle openWithTinyWriteBuffer(const std::filesystem::path& path) {
+  DB::Handle db;
+  DBOptions options;
+  options.open_mode = OpenMode::kOpenOrCreate;
+  options.write_buffer_size = 1;
   ASSERT_OK(DB::open(options, path, &db));
   return db;
 }
@@ -221,7 +233,7 @@ TEST(walRecoveryRejectsChecksumMismatch) {
 TEST(walRecoveryRejectsMalformedBatchAndSequenceGap) {
   {
     TempDirectory directory;
-    std::filesystem::create_directories(directory.path());
+    { DB::Handle db = openOrCreate(directory.path()); }
     std::unique_ptr<WalWriter> writer;
     ASSERT_OK(WalWriter::open(walFileName(directory.path()), writer));
     ASSERT_OK(writer->append("not a write batch"));
@@ -235,7 +247,7 @@ TEST(walRecoveryRejectsMalformedBatchAndSequenceGap) {
 
   {
     TempDirectory directory;
-    std::filesystem::create_directories(directory.path());
+    { DB::Handle db = openOrCreate(directory.path()); }
     const auto wal_path = walFileName(directory.path());
     WriteBatch first;
     first.put("one", "1");
@@ -249,6 +261,19 @@ TEST(walRecoveryRejectsMalformedBatchAndSequenceGap) {
               StatusCode::kCorruption);
     ASSERT_TRUE(db == nullptr);
   }
+}
+
+TEST(openRejectsNumberedFilesWithoutManifest) {
+  TempDirectory directory;
+  std::filesystem::create_directories(directory.path());
+  std::unique_ptr<WalWriter> writer;
+  ASSERT_OK(WalWriter::open(walFileName(directory.path()), writer));
+  writer.reset();
+
+  DB::Handle db;
+  ASSERT_EQ(DB::open({}, directory.path(), &db).code(),
+            StatusCode::kCorruption);
+  ASSERT_TRUE(db == nullptr);
 }
 
 TEST(secondOpenIsBusyUntilFirstHandleIsReleased) {
@@ -303,6 +328,98 @@ TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
             StatusCode::kNotFound);
   ASSERT_EQ(value, "unchanged");
   ASSERT_EQ(db->newSnapshot(nullptr).code(), StatusCode::kInvalidArgument);
+}
+
+TEST(synchronousCheckpointRecoversSSTableAndCurrentWal) {
+  TempDirectory directory;
+  const auto old_wal_copy = directory.path() / "old-wal-copy";
+  {
+    DB::Handle db = openWithTinyWriteBuffer(directory.path());
+    ASSERT_OK(db->put({}, "flushed", "from-sstable"));
+    std::filesystem::copy_file(walFileName(directory.path(), 1), old_wal_copy);
+    // 前一条写入使 MemTable 超限 本次写入前执行同步 checkpoint
+    ASSERT_OK(db->put({}, "tail", "from-wal"));
+
+    ASSERT_EQ(get(*db, "flushed"), "from-sstable");
+    ASSERT_EQ(get(*db, "tail"), "from-wal");
+  }
+
+  ASSERT_TRUE(std::filesystem::exists(manifestFileName(directory.path())));
+  ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 2)));
+  ASSERT_TRUE(std::filesystem::exists(walFileName(directory.path(), 3)));
+  ASSERT_TRUE(!std::filesystem::exists(walFileName(directory.path(), 1)));
+
+  // 模拟 Manifest 提交后、旧 WAL 删除前进程退出
+  std::filesystem::copy_file(old_wal_copy, walFileName(directory.path(), 1));
+  DB::Handle db = openWithTinyWriteBuffer(directory.path());
+  ASSERT_EQ(get(*db, "flushed"), "from-sstable");
+  ASSERT_EQ(get(*db, "tail"), "from-wal");
+}
+
+TEST(level0NewestTableTombstoneAndSnapshotOrderingAreCorrect) {
+  TempDirectory directory;
+  {
+    DB::Handle db = openWithTinyWriteBuffer(directory.path());
+    ASSERT_OK(db->put({}, "key", "v1"));
+
+    SnapshotHandle snapshot;
+    ASSERT_OK(db->newSnapshot(&snapshot));
+
+    ASSERT_OK(db->put({}, "key", "v2"));
+    ASSERT_OK(db->erase({}, "key"));
+    ASSERT_OK(db->put({}, "sentinel", "flush tombstone"));
+
+    std::string value = "unchanged";
+    ASSERT_EQ(db->get({}, "key", &value).code(), StatusCode::kNotFound);
+    ASSERT_EQ(value, "unchanged");
+    ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
+    ASSERT_EQ(value, "v1");
+
+    ASSERT_OK(db->put({}, "key", "v4"));
+    ASSERT_EQ(get(*db, "key"), "v4");
+    ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
+    ASSERT_EQ(value, "v1");
+  }
+
+  DB::Handle db = openWithTinyWriteBuffer(directory.path());
+  ASSERT_EQ(get(*db, "key"), "v4");
+  ASSERT_EQ(get(*db, "sentinel"), "flush tombstone");
+}
+
+TEST(openRejectsCorruptManifestAndMissingReferencedSSTable) {
+  {
+    TempDirectory directory;
+    {
+      DB::Handle db = openOrCreate(directory.path());
+      ASSERT_OK(db->put({}, "key", "value"));
+    }
+    flipLastByte(manifestFileName(directory.path()));
+
+    DB::Handle db;
+    ASSERT_EQ(DB::open({}, directory.path(), &db).code(),
+              StatusCode::kCorruption);
+    ASSERT_TRUE(db == nullptr);
+  }
+
+  {
+    TempDirectory directory;
+    {
+      DB::Handle db = openWithTinyWriteBuffer(directory.path());
+      ASSERT_OK(db->put({}, "flushed", "value"));
+      ASSERT_OK(db->put({}, "tail", "value"));
+    }
+
+    ManifestState state;
+    ASSERT_OK(readManifest(manifestFileName(directory.path()), state));
+    ASSERT_EQ(state.level0_tables.size(), 1U);
+    std::filesystem::remove(
+        sstableFileName(directory.path(), state.level0_tables[0].number));
+
+    DB::Handle db;
+    ASSERT_EQ(DB::open({}, directory.path(), &db).code(),
+              StatusCode::kCorruption);
+    ASSERT_TRUE(db == nullptr);
+  }
 }
 
 }

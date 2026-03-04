@@ -10,6 +10,7 @@ add_library(lsmtree
   src/db/flush_memtable.cc
   src/db/filename.cc
   src/db/internal_key.cc
+  src/db/manifest.cc
   src/db/memtable.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
@@ -46,6 +47,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/db_test.cc
     tests/db/flush_memtable_test.cc
     tests/db/internal_key_test.cc
+    tests/db/manifest_test.cc
     tests/db/memtable_test.cc
     tests/db/skiplist_test.cc
     tests/db/write_batch_codec_test.cc
