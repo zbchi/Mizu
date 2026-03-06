@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(lsmtree VERSION 0.1.0 LANGUAGES CXX)
 
 option(LSMTREE_BUILD_TESTS "Build lsmtree tests" ON)
+find_package(Threads REQUIRED)
 
 add_library(lsmtree
   src/db/db.cc
@@ -29,6 +30,7 @@ add_library(lsmtree
   src/wal/wal_writer.cc
 )
 add_library(lsmtree::lsmtree ALIAS lsmtree)
+target_link_libraries(lsmtree PRIVATE Threads::Threads)
 
 target_compile_features(lsmtree PUBLIC cxx_std_17)
 target_include_directories(lsmtree

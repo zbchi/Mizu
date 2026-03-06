@@ -76,13 +76,9 @@ Status scanDirectory(const std::filesystem::path& directory,
 }
 
 // 提交前失败时最佳努力删除尚未发布的文件
-void removeUnpublishedFilesBestEffort(
-    const std::filesystem::path& table_path,
-    const std::filesystem::path& wal_path) {
+void removeFileBestEffort(const std::filesystem::path& path) {
   std::error_code ignored;
-  std::filesystem::remove(table_path, ignored);
-  ignored.clear();
-  std::filesystem::remove(wal_path, ignored);
+  std::filesystem::remove(path, ignored);
 }
 
 // Manifest 提交后最佳努力删除不再参与恢复的旧 WAL
@@ -185,7 +181,14 @@ void FileLock::reset() noexcept {
   fd_ = -1;
 }
 
-DBImpl::~DBImpl() = default;
+DBImpl::~DBImpl() {
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    shutting_down_ = true;
+    background_cv_.notify_all();
+  }
+  if (background_thread_.joinable()) background_thread_.join();
+}
 
 // 恢复或创建完整数据库状态 成功后才向调用方发布 handle
 Status DBImpl::open(const DBOptions& options,
@@ -246,17 +249,25 @@ Status DBImpl::open(const DBOptions& options,
     if (!status.ok()) return status;
   }
 
+  try {
+    impl->background_thread_ =
+        std::thread(&DBImpl::backgroundLoop, impl.get());
+  } catch (const std::system_error& error) {
+    return Status::ioError("start background flush thread: " +
+                           std::string(error.what()));
+  }
+
   *db = std::move(impl);
   return Status::success();
 }
 
-// 写入前检查是否需要 checkpoint WAL 成功后才更新 MemTable
+// 写入前检查是否需要轮转 WAL 成功后才更新 MemTable
 Status DBImpl::write(const WriteOptions& options, const WriteBatch& batch) {
   if (batch.empty()) return Status::success();
 
   // 在同一把写锁内按记录顺序应用整个 batch
   std::unique_lock<std::shared_mutex> lock(mutex_);
-  Status status = makeRoomForWrite();
+  Status status = makeRoomForWrite(lock);
   if (!status.ok()) return status;
 
   const SequenceNumber first_sequence = last_sequence_ + 1U;
@@ -376,76 +387,125 @@ Status DBImpl::recoverWalFile(const std::filesystem::path& path) {
   return Status::success();
 }
 
-// MemTable 达到上限时在下一次写入前执行 checkpoint
-Status DBImpl::makeRoomForWrite() {
-  if (memtable_->empty() ||
-      memtable_->memoryUsage() < options_.write_buffer_size) {
-    return Status::success();
+// MemTable 达到上限时等待前一次 flush 或快速切换到新 WAL
+Status DBImpl::makeRoomForWrite(
+    std::unique_lock<std::shared_mutex>& lock) {
+  while (true) {
+    if (!background_error_.ok()) return background_error_;
+    if (memtable_->empty() ||
+        memtable_->memoryUsage() < options_.write_buffer_size) {
+      return Status::success();
+    }
+    if (!immutable_) return rotateMemTable();
+
+    // 最多允许一个 immutable MemTable 防止内存和 WAL 无界增长
+    background_cv_.wait(lock);
   }
-  return checkpointMemTable();
 }
 
-// 同步生成一个 L0 SST 并以 Manifest 替换作为提交点
-Status DBImpl::checkpointMemTable() {
+// 先准备好新 MemTable 和 WAL 再一次性发布轮转后的内存状态
+Status DBImpl::rotateMemTable() {
   if (next_file_number_ > std::numeric_limits<std::uint64_t>::max() - 2U) {
     return Status::ioError("database file number space is exhausted");
   }
 
-  const std::uint64_t table_number = next_file_number_++;
-  const std::uint64_t new_wal_number = next_file_number_++;
+  const std::uint64_t table_number = next_file_number_;
+  const std::uint64_t new_wal_number = next_file_number_ + 1U;
+  auto new_memtable = std::make_unique<MemTable>();
+  std::unique_ptr<WalWriter> new_wal;
+  Status status =
+      WalWriter::open(walFileName(directory_, new_wal_number), new_wal);
+  if (!status.ok()) return status;
+
+  next_file_number_ += 2U;
+  immutable_.emplace(ImmutableMemTable{std::move(memtable_), table_number,
+                                       last_sequence_});
+  memtable_ = std::move(new_memtable);
+  wal_ = std::move(new_wal);
+  wal_number_ = new_wal_number;
+  background_cv_.notify_all();
+  return Status::success();
+}
+
+// 唯一后台线程串行消费 immutable MemTable
+void DBImpl::backgroundLoop() {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+  while (true) {
+    background_cv_.wait(
+        lock, [this] { return shutting_down_ || immutable_.has_value(); });
+    if (!immutable_) return;
+
+    lock.unlock();
+    const Status status = flushImmutableMemTable();
+    lock.lock();
+
+    if (!status.ok()) {
+      background_error_ = status;
+      background_cv_.notify_all();
+      return;
+    }
+    if (shutting_down_ && !immutable_) return;
+  }
+}
+
+// 生成 SST 和 Manifest 时 immutable 始终保留在读取路径中
+Status DBImpl::flushImmutableMemTable() {
+  const std::uint64_t table_number = immutable_->table_number;
+  const SequenceNumber flushed_sequence = immutable_->last_sequence;
   const std::filesystem::path temporary_table =
       sstableTemporaryFileName(directory_, table_number);
   const std::filesystem::path final_table =
       sstableFileName(directory_, table_number);
-  const std::filesystem::path new_wal_path =
-      walFileName(directory_, new_wal_number);
 
   SSTableMeta table_meta;
-  Status status = buildLevel0Table(*memtable_, temporary_table, final_table,
-                                   SSTableBuilderOptions{}, table_meta);
+  Status status =
+      buildLevel0Table(*immutable_->memtable, temporary_table, final_table,
+                       SSTableBuilderOptions{}, table_meta);
   if (!status.ok()) return status;
 
   std::unique_ptr<SSTableReader> table_reader;
   status = SSTableReader::open(final_table, table_reader);
   if (!status.ok()) {
-    std::error_code ignored;
-    std::filesystem::remove(final_table, ignored);
-    return status;
-  }
-
-  std::unique_ptr<WalWriter> new_wal;
-  status = WalWriter::open(new_wal_path, new_wal);
-  if (!status.ok()) {
-    removeUnpublishedFilesBestEffort(final_table, new_wal_path);
+    removeFileBestEffort(final_table);
     return status;
   }
 
   ManifestTable descriptor{table_number, table_meta.file_size,
                            table_meta.smallest_key, table_meta.largest_key};
-  ManifestState candidate = manifest_;
-  candidate.flushed_sequence = last_sequence_;
-  candidate.oldest_wal_number = new_wal_number;
-  candidate.level0_tables.insert(candidate.level0_tables.begin(), descriptor);
+  ManifestState candidate;
+  std::uint64_t live_wal_number = 0;
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    candidate = manifest_;
+    candidate.flushed_sequence = flushed_sequence;
+    candidate.oldest_wal_number = wal_number_;
+    candidate.level0_tables.insert(candidate.level0_tables.begin(),
+                                   descriptor);
+    live_wal_number = wal_number_;
 
-  // 在提交 Manifest 前完成所有可能分配内存的准备
-  auto new_memtable = std::make_unique<MemTable>();
-  level0_tables_.reserve(level0_tables_.size() + 1U);
+    // Manifest 提交后发布 L0 不再分配 vector 存储
+    level0_tables_.reserve(level0_tables_.size() + 1U);
+  }
+
   status = writeManifest(manifestFileName(directory_),
                          manifestTemporaryFileName(directory_), candidate);
   if (!status.ok()) {
-    removeUnpublishedFilesBestEffort(final_table, new_wal_path);
+    removeFileBestEffort(final_table);
     return status;
   }
 
-  // Manifest 已提交 后续只做不会失败的内存发布和最佳努力清理
-  wal_ = std::move(new_wal);
-  wal_number_ = new_wal_number;
-  memtable_ = std::move(new_memtable);
-  level0_tables_.insert(
-      level0_tables_.begin(),
-      L0Table{std::move(descriptor), std::move(table_reader)});
-  manifest_ = std::move(candidate);
-  removeObsoleteWalFilesBestEffort(directory_, new_wal_number);
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    // Manifest 已提交 后续内存发布不会执行可能失败的文件操作
+    level0_tables_.insert(
+        level0_tables_.begin(),
+        L0Table{std::move(descriptor), std::move(table_reader)});
+    manifest_ = std::move(candidate);
+    immutable_.reset();
+    background_cv_.notify_all();
+  }
+
+  removeObsoleteWalFilesBestEffort(directory_, live_wal_number);
   return Status::success();
 }
 
@@ -464,7 +524,7 @@ void DBImpl::applyBatch(const WriteBatch& batch,
   }
 }
 
-// 按 MemTable 到 L0 新文件到旧文件的顺序执行点查
+// 按 mutable、immutable、L0 新文件到旧文件的顺序执行点查
 Status DBImpl::get(const ReadOptions& options, Slice key,
                    std::string* value) const {
   if (value == nullptr)
@@ -487,6 +547,14 @@ Status DBImpl::get(const ReadOptions& options, Slice key,
   if (result == LookupResult::kValue) return Status::success();
   if (result == LookupResult::kDeleted) {
     return Status::notFound("key does not exist");
+  }
+
+  if (immutable_) {
+    result = immutable_->memtable->get(key, visible_sequence, value);
+    if (result == LookupResult::kValue) return Status::success();
+    if (result == LookupResult::kDeleted) {
+      return Status::notFound("key does not exist");
+    }
   }
 
   for (const L0Table& table : level0_tables_) {

@@ -330,14 +330,14 @@ TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
   ASSERT_EQ(db->newSnapshot(nullptr).code(), StatusCode::kInvalidArgument);
 }
 
-TEST(synchronousCheckpointRecoversSSTableAndCurrentWal) {
+TEST(backgroundFlushRecoversSSTableAndCurrentWal) {
   TempDirectory directory;
   const auto old_wal_copy = directory.path() / "old-wal-copy";
   {
     DB::Handle db = openWithTinyWriteBuffer(directory.path());
     ASSERT_OK(db->put({}, "flushed", "from-sstable"));
     std::filesystem::copy_file(walFileName(directory.path(), 1), old_wal_copy);
-    // 前一条写入使 MemTable 超限 本次写入前执行同步 checkpoint
+    // 前一条写入使 MemTable 超限 本次写入先轮转再写入新 WAL
     ASSERT_OK(db->put({}, "tail", "from-wal"));
 
     ASSERT_EQ(get(*db, "flushed"), "from-sstable");
@@ -354,6 +354,55 @@ TEST(synchronousCheckpointRecoversSSTableAndCurrentWal) {
   DB::Handle db = openWithTinyWriteBuffer(directory.path());
   ASSERT_EQ(get(*db, "flushed"), "from-sstable");
   ASSERT_EQ(get(*db, "tail"), "from-wal");
+}
+
+TEST(backgroundFlushSerializesRepeatedMemTableRotations) {
+  TempDirectory directory;
+  constexpr std::uint64_t kEntryCount = 12;
+  {
+    DB::Handle db = openWithTinyWriteBuffer(directory.path());
+    for (std::uint64_t index = 0; index < kEntryCount; ++index) {
+      ASSERT_OK(db->put({}, "key-" + std::to_string(index),
+                        "value-" + std::to_string(index)));
+    }
+  }
+
+  ManifestState state;
+  ASSERT_OK(readManifest(manifestFileName(directory.path()), state));
+  ASSERT_EQ(state.level0_tables.size(), kEntryCount - 1U);
+
+  DB::Handle db = openWithTinyWriteBuffer(directory.path());
+  for (std::uint64_t index = 0; index < kEntryCount; ++index) {
+    ASSERT_EQ(get(*db, "key-" + std::to_string(index)),
+              "value-" + std::to_string(index));
+  }
+}
+
+TEST(backgroundFlushFailureStopsWritesAndWalRemainsRecoverable) {
+  TempDirectory directory;
+  const auto manifest_temporary =
+      manifestTemporaryFileName(directory.path());
+  {
+    DB::Handle db = openWithTinyWriteBuffer(directory.path());
+    ASSERT_OK(db->put({}, "immutable", "old-wal"));
+
+    // 目录无法以普通文件方式打开 强制后台 Manifest 发布失败
+    std::filesystem::create_directory(manifest_temporary);
+    ASSERT_OK(db->put({}, "mutable", "new-wal"));
+
+    const Status status = db->put({}, "rejected", "value");
+    ASSERT_EQ(status.code(), StatusCode::kIOError);
+    ASSERT_EQ(get(*db, "immutable"), "old-wal");
+    ASSERT_EQ(get(*db, "mutable"), "new-wal");
+
+    std::string value;
+    ASSERT_EQ(db->get({}, "rejected", &value).code(), StatusCode::kNotFound);
+  }
+
+  std::filesystem::remove(manifest_temporary);
+  DB::Handle db = openWithTinyWriteBuffer(directory.path());
+  ASSERT_EQ(get(*db, "immutable"), "old-wal");
+  ASSERT_EQ(get(*db, "mutable"), "new-wal");
 }
 
 TEST(level0NewestTableTombstoneAndSnapshotOrderingAreCorrect) {
