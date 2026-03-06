@@ -7,6 +7,7 @@ find_package(Threads REQUIRED)
 
 add_library(lsmtree
   src/db/db.cc
+  src/db/db_files.cc
   src/db/db_impl.cc
   src/db/flush_memtable.cc
   src/db/filename.cc
@@ -46,6 +47,7 @@ if(LSMTREE_BUILD_TESTS)
 
   add_executable(lsmtree_tests
     tests/test_main.cc
+    tests/db/db_files_test.cc
     tests/db/db_test.cc
     tests/db/flush_memtable_test.cc
     tests/db/internal_key_test.cc

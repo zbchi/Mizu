@@ -9,30 +9,12 @@
 #include <thread>
 #include <vector>
 
+#include "db/db_files.h"
 #include "db/manifest.h"
 #include "db/memtable.h"
 #include "lsmtree/db.h"
 
 namespace lsmtree {
-
-// 通过 RAII 持有数据库目录的 POSIX 文件锁
-class FileLock {
- public:
-  FileLock() = default;
-  explicit FileLock(int fd) noexcept;
-  ~FileLock();
-
-  FileLock(FileLock&& other) noexcept;
-  FileLock& operator=(FileLock&& other) noexcept;
-
-  FileLock(const FileLock&) = delete;
-  FileLock& operator=(const FileLock&) = delete;
-
- private:
-  void reset() noexcept;
-
-  int fd_ = -1;
-};
 
 class WalWriter;
 class SSTableReader;
@@ -64,6 +46,8 @@ class DBImpl final : public DB {
     SequenceNumber last_sequence = 0;
   };
 
+  Status initializeNewDatabase(const DirectoryContents& files);
+  Status recoverDatabase(const DirectoryContents& files);
   // 恢复阶段按 Manifest 顺序打开全部 L0 文件
   Status loadLevel0Tables();
   // 从 Manifest 指定的 WAL 下界开始顺序重放

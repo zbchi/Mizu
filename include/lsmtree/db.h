@@ -68,7 +68,6 @@ enum class CacheMode {
 struct DBOptions {
   OpenMode open_mode = OpenMode::kOpenOrCreate;
   std::size_t write_buffer_size = 4U * 1024U * 1024U;
-  std::size_t target_sstable_size = 2U * 1024U * 1024U;
 };
 
 class Snapshot {

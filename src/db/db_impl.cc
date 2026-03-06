@@ -1,12 +1,6 @@
 #include "db/db_impl.h"
 
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-
 #include <algorithm>
-#include <cerrno>
-#include <cstring>
 #include <limits>
 #include <mutex>
 #include <system_error>
@@ -32,153 +26,6 @@ class SnapshotImpl final : public Snapshot {
   SequenceNumber sequence;
 };
 
-Status filesystemError(const char* operation, const std::filesystem::path& path,
-                       const std::error_code& error) {
-  return Status::ioError(std::string(operation) + " " + path.string() + ": " +
-                         error.message());
-}
-
-Status posixError(const char* operation, const std::filesystem::path& path) {
-  return Status::ioError(std::string(operation) + " " + path.string() + ": " +
-                         std::strerror(errno));
-}
-
-struct DirectoryContents {
-  std::vector<std::uint64_t> wal_numbers;
-  bool has_sstable = false;
-  std::uint64_t maximum_number = 0;
-};
-
-// 扫描目录中的编号文件并收集 WAL 与最大文件编号
-Status scanDirectory(const std::filesystem::path& directory,
-                     DirectoryContents& contents) {
-  DirectoryContents scanned;
-  std::error_code error;
-  std::filesystem::directory_iterator iterator(directory, error);
-  if (error) return filesystemError("list directory", directory, error);
-
-  for (const auto& entry : iterator) {
-    std::uint64_t number = 0;
-    NumberedFileType type = NumberedFileType::kWal;
-    if (!parseNumberedFileName(entry.path(), number, type)) continue;
-
-    scanned.maximum_number = std::max(scanned.maximum_number, number);
-    if (type == NumberedFileType::kWal) {
-      scanned.wal_numbers.push_back(number);
-    } else if (type == NumberedFileType::kSSTable) {
-      scanned.has_sstable = true;
-    }
-  }
-
-  std::sort(scanned.wal_numbers.begin(), scanned.wal_numbers.end());
-  contents = std::move(scanned);
-  return Status::success();
-}
-
-// 提交前失败时最佳努力删除尚未发布的文件
-void removeFileBestEffort(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-}
-
-// Manifest 提交后最佳努力删除不再参与恢复的旧 WAL
-void removeObsoleteWalFilesBestEffort(
-    const std::filesystem::path& directory,
-    std::uint64_t live_wal_number) {
-  std::error_code error;
-  std::filesystem::directory_iterator iterator(directory, error);
-  if (error) return;
-
-  for (const auto& entry : iterator) {
-    std::uint64_t number = 0;
-    NumberedFileType type = NumberedFileType::kWal;
-    if (!parseNumberedFileName(entry.path(), number, type) ||
-        type != NumberedFileType::kWal || number >= live_wal_number) {
-      continue;
-    }
-    std::error_code ignored;
-    std::filesystem::remove(entry.path(), ignored);
-  }
-}
-
-// 根据打开模式校验或创建数据库目录
-Status prepareDirectory(OpenMode mode, const std::filesystem::path& directory) {
-  if (directory.empty()) {
-    return Status::invalidArgument("database directory must not be empty");
-  }
-
-  std::error_code error;
-  const bool exists = std::filesystem::exists(directory, error);
-  if (error) return filesystemError("stat", directory, error);
-
-  if (exists && !std::filesystem::is_directory(directory, error)) {
-    if (error) return filesystemError("stat", directory, error);
-    return Status::invalidArgument("database path is not a directory: " +
-                                   directory.string());
-  }
-  if (error) return filesystemError("stat", directory, error);
-
-  if (mode == OpenMode::kOpenExisting && !exists) {
-    return Status::notFound("database directory does not exist: " +
-                            directory.string());
-  }
-  if (mode == OpenMode::kCreateNew && exists) {
-    return Status::alreadyExists("database directory already exists: " +
-                                 directory.string());
-  }
-  if (!exists) {
-    std::filesystem::create_directories(directory, error);
-    if (error) return filesystemError("create directory", directory, error);
-  }
-
-  return Status::success();
-}
-
-// 用非阻塞排他锁保证同一目录一次只被一个 DB 实例打开
-Status acquireDatabaseLock(const std::filesystem::path& db_directory,
-                           FileLock& lock) {
-  const std::filesystem::path lock_path = lockFileName(db_directory);
-  const int fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0644);
-  if (fd < 0) return posixError("open", lock_path);
-
-  if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-    const int saved_errno = errno;
-    close(fd);
-    if (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN) {
-      return Status::busy("database is already open: " + db_directory.string());
-    }
-    errno = saved_errno;
-    return posixError("lock", lock_path);
-  }
-
-  lock = FileLock(fd);
-  return Status::success();
-}
-
-}
-
-FileLock::FileLock(int fd) noexcept : fd_(fd) {}
-
-FileLock::~FileLock() { reset(); }
-
-FileLock::FileLock(FileLock&& other) noexcept : fd_(other.fd_) {
-  other.fd_ = -1;
-}
-
-FileLock& FileLock::operator=(FileLock&& other) noexcept {
-  if (this != &other) {
-    reset();
-    fd_ = other.fd_;
-    other.fd_ = -1;
-  }
-  return *this;
-}
-
-void FileLock::reset() noexcept {
-  if (fd_ < 0) return;
-  flock(fd_, LOCK_UN);
-  close(fd_);
-  fd_ = -1;
 }
 
 DBImpl::~DBImpl() {
@@ -198,11 +45,7 @@ Status DBImpl::open(const DBOptions& options,
   if (options.write_buffer_size == 0) {
     return Status::invalidArgument("write_buffer_size must be positive");
   }
-  if (options.target_sstable_size == 0) {
-    return Status::invalidArgument("target_sstable_size must be positive");
-  }
-
-  Status status = prepareDirectory(options.open_mode, directory);
+  Status status = prepareDatabaseDirectory(options.open_mode, directory);
   if (!status.ok()) return status;
 
   auto impl = std::make_unique<DBImpl>();
@@ -213,7 +56,7 @@ Status DBImpl::open(const DBOptions& options,
   impl->directory_ = directory;
 
   DirectoryContents files;
-  status = scanDirectory(directory, files);
+  status = scanDatabaseDirectory(directory, files);
   if (!status.ok()) return status;
   if (files.maximum_number == std::numeric_limits<std::uint64_t>::max()) {
     return Status::corruption("database file number space is exhausted");
@@ -229,25 +72,11 @@ Status DBImpl::open(const DBOptions& options,
   }
 
   if (has_manifest) {
-    status = readManifest(manifest_path, impl->manifest_);
-    if (!status.ok()) return status;
-    status = impl->loadLevel0Tables();
-    if (!status.ok()) return status;
-    status = impl->recoverWalFiles(files.wal_numbers);
-    if (!status.ok()) return status;
+    status = impl->recoverDatabase(files);
   } else {
-    if (!files.wal_numbers.empty() || files.has_sstable) {
-      return Status::corruption("database files exist without a manifest");
-    }
-    const std::uint64_t wal_number = impl->next_file_number_++;
-    status = WalWriter::open(walFileName(directory, wal_number), impl->wal_);
-    if (!status.ok()) return status;
-    impl->wal_number_ = wal_number;
-    impl->manifest_.oldest_wal_number = wal_number;
-    status = writeManifest(manifest_path, manifestTemporaryFileName(directory),
-                           impl->manifest_);
-    if (!status.ok()) return status;
+    status = impl->initializeNewDatabase(files);
   }
+  if (!status.ok()) return status;
 
   try {
     impl->background_thread_ =
@@ -259,6 +88,32 @@ Status DBImpl::open(const DBOptions& options,
 
   *db = std::move(impl);
   return Status::success();
+}
+
+// 无 Manifest 时只允许从空的编号文件集初始化数据库
+Status DBImpl::initializeNewDatabase(const DirectoryContents& files) {
+  if (!files.wal_numbers.empty() || files.has_sstable) {
+    return Status::corruption("database files exist without a manifest");
+  }
+
+  const std::uint64_t wal_number = next_file_number_++;
+  Status status = WalWriter::open(walFileName(directory_, wal_number), wal_);
+  if (!status.ok()) return status;
+
+  wal_number_ = wal_number;
+  manifest_.oldest_wal_number = wal_number;
+  return writeManifest(manifestFileName(directory_),
+                       manifestTemporaryFileName(directory_), manifest_);
+}
+
+// 已有 Manifest 时依次恢复 L0 serving state 和仍然存活的 WAL
+Status DBImpl::recoverDatabase(const DirectoryContents& files) {
+  Status status = readManifest(manifestFileName(directory_), manifest_);
+  if (!status.ok()) return status;
+
+  status = loadLevel0Tables();
+  if (!status.ok()) return status;
+  return recoverWalFiles(files.wal_numbers);
 }
 
 // 写入前检查是否需要轮转 WAL 成功后才更新 MemTable
