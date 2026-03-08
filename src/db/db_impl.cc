@@ -102,8 +102,10 @@ Status DBImpl::initializeNewDatabase(const DirectoryContents& files) {
 
   wal_number_ = wal_number;
   manifest_.oldest_wal_number = wal_number;
-  return writeManifest(manifestFileName(directory_),
-                       manifestTemporaryFileName(directory_), manifest_);
+  status = writeManifest(manifestFileName(directory_),
+                         manifestTemporaryFileName(directory_), manifest_);
+  if (!status.ok()) return status;
+  return loadVersion();
 }
 
 // 已有 Manifest 时依次恢复 L0 serving state 和仍然存活的 WAL
@@ -111,7 +113,7 @@ Status DBImpl::recoverDatabase(const DirectoryContents& files) {
   Status status = readManifest(manifestFileName(directory_), manifest_);
   if (!status.ok()) return status;
 
-  status = loadLevel0Tables();
+  status = loadVersion();
   if (!status.ok()) return status;
   return recoverWalFiles(files.wal_numbers);
 }
@@ -146,36 +148,8 @@ Status DBImpl::write(const WriteOptions& options, const WriteBatch& batch) {
   return Status::success();
 }
 
-// 按 Manifest 顺序打开 L0 全部成功后再发布读取状态
-Status DBImpl::loadLevel0Tables() {
-  std::vector<L0Table> loaded;
-  loaded.reserve(manifest_.level0_tables.size());
-
-  for (const ManifestTable& descriptor : manifest_.level0_tables) {
-    const std::filesystem::path path =
-        sstableFileName(directory_, descriptor.number);
-    std::error_code error;
-    const bool exists = std::filesystem::exists(path, error);
-    if (error) return filesystemError("stat", path, error);
-    if (!exists) {
-      return Status::corruption("manifest references a missing SSTable: " +
-                                path.string());
-    }
-    const std::uintmax_t size = std::filesystem::file_size(path, error);
-    if (error) return filesystemError("stat", path, error);
-    if (size != descriptor.file_size) {
-      return Status::corruption("SSTable size does not match manifest: " +
-                                path.string());
-    }
-
-    std::unique_ptr<SSTableReader> reader;
-    Status status = SSTableReader::open(path, reader);
-    if (!status.ok()) return status;
-    loaded.push_back(L0Table{descriptor, std::move(reader)});
-  }
-
-  level0_tables_ = std::move(loaded);
-  return Status::success();
+Status DBImpl::loadVersion() {
+  return Version::open(directory_, manifest_, current_version_);
 }
 
 // 从最老有效 WAL 开始恢复并继续使用最大编号 WAL
@@ -325,9 +299,10 @@ Status DBImpl::flushImmutableMemTable() {
     return status;
   }
 
-  ManifestTable descriptor{table_number, table_meta.file_size,
-                           table_meta.smallest_key, table_meta.largest_key};
+  TableMeta descriptor{table_number, table_meta.file_size,
+                       table_meta.smallest_key, table_meta.largest_key};
   ManifestState candidate;
+  std::shared_ptr<const Version> candidate_version;
   std::uint64_t live_wal_number = 0;
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -337,9 +312,8 @@ Status DBImpl::flushImmutableMemTable() {
     candidate.level0_tables.insert(candidate.level0_tables.begin(),
                                    descriptor);
     live_wal_number = wal_number_;
-
-    // Manifest 提交后发布 L0 不再分配 vector 存储
-    level0_tables_.reserve(level0_tables_.size() + 1U);
+    candidate_version = current_version_->withLevel0Table(
+        descriptor, std::move(table_reader));
   }
 
   status = writeManifest(manifestFileName(directory_),
@@ -351,10 +325,8 @@ Status DBImpl::flushImmutableMemTable() {
 
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    // Manifest 已提交 后续内存发布不会执行可能失败的文件操作
-    level0_tables_.insert(
-        level0_tables_.begin(),
-        L0Table{std::move(descriptor), std::move(table_reader)});
+    // Manifest 已提交 后续发布只替换已经构造完成的内存状态
+    current_version_ = std::move(candidate_version);
     manifest_ = std::move(candidate);
     immutable_.reset();
     background_cv_.notify_all();
@@ -379,7 +351,7 @@ void DBImpl::applyBatch(const WriteBatch& batch,
   }
 }
 
-// 按 mutable、immutable、L0 新文件到旧文件的顺序执行点查
+// 按 mutable、immutable、当前磁盘 Version 的顺序执行点查
 Status DBImpl::get(const ReadOptions& options, Slice key,
                    std::string* value) const {
   if (value == nullptr)
@@ -395,32 +367,32 @@ Status DBImpl::get(const ReadOptions& options, Slice key,
     visible_sequence = snapshot->sequence;
   }
 
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  if (!options.snapshot) visible_sequence = last_sequence_;
+  std::shared_ptr<const Version> version;
+  LookupResult result = LookupResult::kAbsent;
+  {
+    // 锁内固定可见序号和磁盘 Version 后续 SST I/O 不占用数据库锁
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    if (!options.snapshot) visible_sequence = last_sequence_;
 
-  LookupResult result = memtable_->get(key, visible_sequence, value);
+    result = memtable_->get(key, visible_sequence, value);
+    if (result == LookupResult::kValue) return Status::success();
+    if (result == LookupResult::kDeleted) {
+      return Status::notFound("key does not exist");
+    }
+
+    if (immutable_) {
+      result = immutable_->memtable->get(key, visible_sequence, value);
+      if (result == LookupResult::kValue) return Status::success();
+      if (result == LookupResult::kDeleted) {
+        return Status::notFound("key does not exist");
+      }
+    }
+    version = current_version_;
+  }
+
+  Status status = version->get(options, key, visible_sequence, result, *value);
+  if (!status.ok()) return status;
   if (result == LookupResult::kValue) return Status::success();
-  if (result == LookupResult::kDeleted) {
-    return Status::notFound("key does not exist");
-  }
-
-  if (immutable_) {
-    result = immutable_->memtable->get(key, visible_sequence, value);
-    if (result == LookupResult::kValue) return Status::success();
-    if (result == LookupResult::kDeleted) {
-      return Status::notFound("key does not exist");
-    }
-  }
-
-  for (const L0Table& table : level0_tables_) {
-    Status status =
-        table.reader->get(options, key, visible_sequence, result, *value);
-    if (!status.ok()) return status;
-    if (result == LookupResult::kValue) return Status::success();
-    if (result == LookupResult::kDeleted) {
-      return Status::notFound("key does not exist");
-    }
-  }
   return Status::notFound("key does not exist");
 }
 

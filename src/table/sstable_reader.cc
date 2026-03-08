@@ -151,4 +151,100 @@ Status SSTableReader::get(const ReadOptions& options, Slice user_key,
   return Status::success();
 }
 
+std::unique_ptr<SSTableIterator> SSTableReader::newIterator(
+    const ReadOptions& options) const {
+  return std::unique_ptr<SSTableIterator>(new SSTableIterator(*this, options));
+}
+
+SSTableIterator::SSTableIterator(const SSTableReader& table,
+                                 ReadOptions options)
+    : table_(table),
+      options_(std::move(options)),
+      index_(std::make_unique<BlockIterator>(table.index_block_)) {
+  // index 常驻 reader 内存 构造时先锁存其格式错误
+  if (!index_->status().ok()) status_ = index_->status();
+}
+
+SSTableIterator::~SSTableIterator() = default;
+
+void SSTableIterator::seekToFirst() {
+  if (!status_.ok()) return;
+  // 重置当前 data block 后从第一条 index entry 重新定位
+  data_.reset();
+  data_block_.clear();
+  index_->seekToFirst();
+  if (!index_->status().ok()) {
+    status_ = index_->status();
+    return;
+  }
+  if (index_->valid()) loadDataBlock();
+}
+
+void SSTableIterator::next() {
+  assert(valid());
+  data_->next();
+  if (!data_->status().ok()) {
+    status_ = data_->status();
+    data_.reset();
+    return;
+  }
+  if (data_->valid()) return;
+
+  // 当前 data block 耗尽后由下一条 index entry 加载下一块
+  index_->next();
+  if (!index_->status().ok()) {
+    status_ = index_->status();
+    data_.reset();
+    return;
+  }
+  data_.reset();
+  if (index_->valid()) loadDataBlock();
+}
+
+bool SSTableIterator::valid() const noexcept {
+  return status_.ok() && data_ && data_->valid();
+}
+
+Slice SSTableIterator::internalKey() const {
+  assert(valid());
+  return data_->key();
+}
+
+Slice SSTableIterator::value() const {
+  assert(valid());
+  return data_->value();
+}
+
+void SSTableIterator::loadDataBlock() {
+  // index value 必须完整编码且只能编码一个 BlockHandle
+  Slice encoded_handle = index_->value();
+  BlockHandle handle;
+  if (!getBlockHandle(encoded_handle, handle) || !encoded_handle.empty()) {
+    status_ = Status::corruption("invalid data block handle in SSTable index");
+    return;
+  }
+
+  status_ = readBlock(table_.fd_, table_.file_size_, handle,
+                      options_.verify_checksums, data_block_);
+  if (!status_.ok()) return;
+
+  // BlockIterator 借用 data_block_ 切换 block 前必须先销毁旧迭代器
+  data_ = std::make_unique<BlockIterator>(data_block_);
+  if (!data_->status().ok()) {
+    status_ = data_->status();
+    data_.reset();
+    return;
+  }
+  data_->seekToFirst();
+  if (!data_->status().ok()) {
+    status_ = data_->status();
+    data_.reset();
+    return;
+  }
+  if (!data_->valid()) {
+    status_ = Status::corruption("SSTable index references an empty data block");
+    data_.reset();
+  }
+}
+
 }

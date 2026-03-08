@@ -10,6 +10,8 @@
 #include "db/filename.h"
 #include "db/internal_key.h"
 #include "test.h"
+#include "util/coding.h"
+#include "util/crc32c.h"
 
 namespace lsmtree {
 namespace {
@@ -36,9 +38,9 @@ class ManifestTempDirectory {
   std::filesystem::path path_;
 };
 
-ManifestTable table(std::uint64_t number, Slice first_user_key,
-                    Slice last_user_key) {
-  ManifestTable result;
+TableMeta table(std::uint64_t number, Slice first_user_key,
+                Slice last_user_key) {
+  TableMeta result;
   result.number = number;
   result.file_size = number * 100U;
   result.smallest_key =
@@ -60,6 +62,8 @@ TEST(manifestRoundTripsCompleteLevel0State) {
   state.oldest_wal_number = 9;
   state.level0_tables.push_back(table(8, std::string("a\0", 2), "z"));
   state.level0_tables.push_back(table(6, "alpha", "omega"));
+  state.level1_tables.push_back(table(10, "aardvark", "beta"));
+  state.level1_tables.push_back(table(11, "delta", "zulu"));
   ASSERT_OK(writeManifest(path, temporary, state));
   ASSERT_TRUE(std::filesystem::exists(path));
   ASSERT_TRUE(!std::filesystem::exists(temporary));
@@ -74,6 +78,69 @@ TEST(manifestRoundTripsCompleteLevel0State) {
   ASSERT_EQ(decoded.level0_tables[0].smallest_key,
             state.level0_tables[0].smallest_key);
   ASSERT_EQ(decoded.level0_tables[1].number, 6U);
+  ASSERT_EQ(decoded.level1_tables.size(), 2U);
+  ASSERT_EQ(decoded.level1_tables[0].number, 10U);
+  ASSERT_EQ(decoded.level1_tables[1].number, 11U);
+}
+
+TEST(manifestReadsLegacyLevel0OnlyState) {
+  ManifestTempDirectory directory;
+  const auto path = manifestFileName(directory.path());
+
+  const TableMeta legacy_table = table(7, "alpha", "omega");
+  std::string encoded = "LSMMAN01";
+  putFixed32(encoded, 1);
+  putFixed64(encoded, 12);
+  putFixed64(encoded, 3);
+  putFixed32(encoded, 1);
+  putFixed64(encoded, legacy_table.number);
+  putFixed64(encoded, legacy_table.file_size);
+  putFixed32(encoded,
+             static_cast<std::uint32_t>(legacy_table.smallest_key.size()));
+  encoded.append(legacy_table.smallest_key);
+  putFixed32(encoded,
+             static_cast<std::uint32_t>(legacy_table.largest_key.size()));
+  encoded.append(legacy_table.largest_key);
+  putFixed32(encoded, crc32c(encoded));
+
+  std::ofstream file(path, std::ios::binary);
+  file.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+  file.close();
+
+  ManifestState decoded;
+  ASSERT_OK(readManifest(path, decoded));
+  ASSERT_EQ(decoded.flushed_sequence, 12U);
+  ASSERT_EQ(decoded.level0_tables.size(), 1U);
+  ASSERT_EQ(decoded.level0_tables[0].number, 7U);
+  ASSERT_TRUE(decoded.level1_tables.empty());
+}
+
+TEST(manifestRejectsInvalidLevel1Layout) {
+  ManifestTempDirectory directory;
+  const auto path = manifestFileName(directory.path());
+  const auto temporary = manifestTemporaryFileName(directory.path());
+
+  ManifestState state;
+  state.oldest_wal_number = 1;
+  state.level1_tables.push_back(table(2, "alpha", "delta"));
+  state.level1_tables.push_back(table(3, "delta", "omega"));
+  ASSERT_EQ(writeManifest(path, temporary, state).code(),
+            StatusCode::kInvalidArgument);
+
+  state.level1_tables = {table(2, "delta", "omega"),
+                         table(3, "alpha", "beta")};
+  ASSERT_EQ(writeManifest(path, temporary, state).code(),
+            StatusCode::kInvalidArgument);
+
+  state.level0_tables.push_back(table(2, "x", "z"));
+  state.level1_tables = {table(2, "alpha", "beta")};
+  ASSERT_EQ(writeManifest(path, temporary, state).code(),
+            StatusCode::kInvalidArgument);
+
+  state.level0_tables.clear();
+  state.level1_tables = {table(2, "", ""), table(3, "", "alpha")};
+  ASSERT_EQ(writeManifest(path, temporary, state).code(),
+            StatusCode::kInvalidArgument);
 }
 
 TEST(manifestRejectsChecksumMismatchAndInvalidState) {

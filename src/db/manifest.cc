@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cassert>
 #include <limits>
 #include <set>
 #include <string>
@@ -19,7 +20,8 @@ namespace {
 
 constexpr char kManifestMagic[] = "LSMMAN01";
 constexpr std::size_t kManifestMagicSize = sizeof(kManifestMagic) - 1U;
-constexpr std::uint32_t kManifestVersion = 1;
+constexpr std::uint32_t kManifestVersion = 2;
+constexpr std::uint32_t kLegacyManifestVersion = 1;
 constexpr std::size_t kManifestChecksumSize = sizeof(std::uint32_t);
 constexpr std::size_t kInternalKeyTagSize = sizeof(std::uint64_t);
 constexpr std::size_t kMinimumTableEncodingSize =
@@ -35,7 +37,31 @@ Status ioError(const char* operation, const std::filesystem::path& path,
                          ": " + error.message());
 }
 
-// 检查即将编码或已经解码的 Manifest 状态是否自洽
+// 校验单个文件元数据并保证文件编号在所有 level 中唯一
+const char* validateTable(const TableMeta& table,
+                          std::set<std::uint64_t>& numbers) {
+  if (table.number == 0 || table.file_size == 0) {
+    return "manifest contains invalid table metadata";
+  }
+  if (!numbers.insert(table.number).second) {
+    return "manifest contains a duplicate table number";
+  }
+  if (table.smallest_key.size() > std::numeric_limits<std::uint32_t>::max() ||
+      table.largest_key.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return "manifest table key is too large";
+  }
+
+  ParsedInternalKey smallest{};
+  ParsedInternalKey largest{};
+  if (!parseInternalKey(table.smallest_key, smallest) ||
+      !parseInternalKey(table.largest_key, largest) ||
+      InternalKeyLess{}(table.largest_key, table.smallest_key)) {
+    return "manifest contains an invalid table key range";
+  }
+  return nullptr;
+}
+
+// 检查即将编码或已经解码的完整 Manifest 状态是否自洽
 const char* validateState(const ManifestState& state) {
   if (state.flushed_sequence > kMaxSequenceNumber) {
     return "manifest flushed sequence is out of range";
@@ -46,27 +72,31 @@ const char* validateState(const ManifestState& state) {
   if (state.level0_tables.size() > std::numeric_limits<std::uint32_t>::max()) {
     return "manifest has too many L0 tables";
   }
+  if (state.level1_tables.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return "manifest has too many L1 tables";
+  }
 
   std::set<std::uint64_t> numbers;
-  for (const ManifestTable& table : state.level0_tables) {
-    if (table.number == 0 || table.file_size == 0) {
-      return "manifest contains invalid table metadata";
-    }
-    if (!numbers.insert(table.number).second) {
-      return "manifest contains a duplicate table number";
-    }
-    if (table.smallest_key.size() > std::numeric_limits<std::uint32_t>::max() ||
-        table.largest_key.size() > std::numeric_limits<std::uint32_t>::max()) {
-      return "manifest table key is too large";
-    }
+  for (const TableMeta& table : state.level0_tables) {
+    if (const char* error = validateTable(table, numbers)) return error;
+  }
+
+  Slice previous_largest;
+  bool has_previous = false;
+  // L1 以 user key 划分文件 同一个 user key 不允许跨越文件边界
+  for (const TableMeta& table : state.level1_tables) {
+    if (const char* error = validateTable(table, numbers)) return error;
 
     ParsedInternalKey smallest{};
     ParsedInternalKey largest{};
-    if (!parseInternalKey(table.smallest_key, smallest) ||
-        !parseInternalKey(table.largest_key, largest) ||
-        InternalKeyLess{}(table.largest_key, table.smallest_key)) {
-      return "manifest contains an invalid table key range";
+    const bool parsed_smallest = parseInternalKey(table.smallest_key, smallest);
+    const bool parsed_largest = parseInternalKey(table.largest_key, largest);
+    assert(parsed_smallest && parsed_largest);
+    if (has_previous && previous_largest >= smallest.user_key) {
+      return "manifest L1 table ranges overlap or are out of order";
     }
+    previous_largest = largest.user_key;
+    has_previous = true;
   }
   return nullptr;
 }
@@ -80,19 +110,11 @@ bool takeString(Slice& input, std::string& value) {
   return true;
 }
 
-// 将完整 Manifest 状态编码为带校验和的磁盘格式
-Status encodeManifest(const ManifestState& state, std::string& output) {
-  if (const char* error = validateState(state)) {
-    return Status::invalidArgument(error);
-  }
-
-  std::string encoded(kManifestMagic, kManifestMagicSize);
-  putFixed32(encoded, kManifestVersion);
-  putFixed64(encoded, state.flushed_sequence);
-  putFixed64(encoded, state.oldest_wal_number);
-  putFixed32(encoded, static_cast<std::uint32_t>(state.level0_tables.size()));
-
-  for (const ManifestTable& table : state.level0_tables) {
+// 写入一个 level 的文件数量和完整元数据
+Status appendTables(const std::vector<TableMeta>& tables,
+                    std::string& encoded) {
+  putFixed32(encoded, static_cast<std::uint32_t>(tables.size()));
+  for (const TableMeta& table : tables) {
     putFixed64(encoded, table.number);
     putFixed64(encoded, table.file_size);
     putFixed32(encoded, static_cast<std::uint32_t>(table.smallest_key.size()));
@@ -103,6 +125,45 @@ Status encodeManifest(const ManifestState& state, std::string& output) {
       return Status::invalidArgument("manifest exceeds 64 MiB");
     }
   }
+  return Status::success();
+}
+
+// 从输入中完整取出一个 level 失败时由上层丢弃临时状态
+bool takeTables(Slice& input, std::vector<TableMeta>& tables) {
+  std::uint32_t table_count = 0;
+  if (!getFixed32(input, table_count) ||
+      table_count > input.size() / kMinimumTableEncodingSize) {
+    return false;
+  }
+
+  tables.reserve(table_count);
+  for (std::uint32_t index = 0; index < table_count; ++index) {
+    TableMeta table;
+    if (!getFixed64(input, table.number) ||
+        !getFixed64(input, table.file_size) ||
+        !takeString(input, table.smallest_key) ||
+        !takeString(input, table.largest_key)) {
+      return false;
+    }
+    tables.push_back(std::move(table));
+  }
+  return true;
+}
+
+// 将完整 Manifest 状态编码为带校验和的磁盘格式
+Status encodeManifest(const ManifestState& state, std::string& output) {
+  if (const char* error = validateState(state)) {
+    return Status::invalidArgument(error);
+  }
+
+  std::string encoded(kManifestMagic, kManifestMagicSize);
+  putFixed32(encoded, kManifestVersion);
+  putFixed64(encoded, state.flushed_sequence);
+  putFixed64(encoded, state.oldest_wal_number);
+  Status status = appendTables(state.level0_tables, encoded);
+  if (!status.ok()) return status;
+  status = appendTables(state.level1_tables, encoded);
+  if (!status.ok()) return status;
 
   putFixed32(encoded, crc32c(encoded));
   output = std::move(encoded);
@@ -137,29 +198,21 @@ Status decodeManifest(Slice input, ManifestState& output) {
 
   std::uint32_t version = 0;
   ManifestState decoded;
-  std::uint32_t table_count = 0;
-  if (!getFixed32(cursor, version) || version != kManifestVersion) {
+  if (!getFixed32(cursor, version) ||
+      (version != kLegacyManifestVersion && version != kManifestVersion)) {
     return Status::corruption("unsupported manifest version");
   }
   if (!getFixed64(cursor, decoded.flushed_sequence) ||
-      !getFixed64(cursor, decoded.oldest_wal_number) ||
-      !getFixed32(cursor, table_count)) {
+      !getFixed64(cursor, decoded.oldest_wal_number)) {
     return Status::corruption("truncated manifest header");
   }
-  if (table_count > cursor.size() / kMinimumTableEncodingSize) {
-    return Status::corruption("manifest table count exceeds input");
+  if (!takeTables(cursor, decoded.level0_tables)) {
+    return Status::corruption("invalid manifest L0 table list");
   }
-
-  decoded.level0_tables.reserve(table_count);
-  for (std::uint32_t index = 0; index < table_count; ++index) {
-    ManifestTable table;
-    if (!getFixed64(cursor, table.number) ||
-        !getFixed64(cursor, table.file_size) ||
-        !takeString(cursor, table.smallest_key) ||
-        !takeString(cursor, table.largest_key)) {
-      return Status::corruption("truncated manifest table metadata");
-    }
-    decoded.level0_tables.push_back(std::move(table));
+  // v1 文件到 L0 列表结束 v2 在其后追加 L1 列表
+  if (version == kManifestVersion &&
+      !takeTables(cursor, decoded.level1_tables)) {
+    return Status::corruption("invalid manifest L1 table list");
   }
   if (!cursor.empty()) {
     return Status::corruption("manifest has trailing bytes");

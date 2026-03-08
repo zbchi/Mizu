@@ -12,13 +12,12 @@
 #include "db/db_files.h"
 #include "db/manifest.h"
 #include "db/memtable.h"
+#include "db/version.h"
 #include "lsmtree/db.h"
 
 namespace lsmtree {
 
 class WalWriter;
-class SSTableReader;
-
 class DBImpl final : public DB {
  public:
   static Status open(const DBOptions& options,
@@ -35,11 +34,6 @@ class DBImpl final : public DB {
                      std::unique_ptr<Iterator>* iterator) const override;
 
  private:
-  struct L0Table {
-    ManifestTable meta;
-    std::unique_ptr<SSTableReader> reader;
-  };
-
   struct ImmutableMemTable {
     std::unique_ptr<MemTable> memtable;
     std::uint64_t table_number = 0;
@@ -48,8 +42,8 @@ class DBImpl final : public DB {
 
   Status initializeNewDatabase(const DirectoryContents& files);
   Status recoverDatabase(const DirectoryContents& files);
-  // 恢复阶段按 Manifest 顺序打开全部 L0 文件
-  Status loadLevel0Tables();
+  // 恢复阶段打开 Manifest 引用的完整磁盘状态
+  Status loadVersion();
   // 从 Manifest 指定的 WAL 下界开始顺序重放
   Status recoverWalFiles(const std::vector<std::uint64_t>& wal_numbers);
   // 重放单个 WAL 并截断崩溃留下的不完整尾部
@@ -71,7 +65,7 @@ class DBImpl final : public DB {
   std::uint64_t wal_number_ = 0;
   std::uint64_t next_file_number_ = 1;
   ManifestState manifest_;
-  std::vector<L0Table> level0_tables_;
+  std::shared_ptr<const Version> current_version_;
   SequenceNumber last_sequence_ = 0;
   mutable std::shared_mutex mutex_;
   std::unique_ptr<MemTable> memtable_ = std::make_unique<MemTable>();

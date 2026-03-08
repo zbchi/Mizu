@@ -14,6 +14,7 @@ add_library(lsmtree
   src/db/internal_key.cc
   src/db/manifest.cc
   src/db/memtable.cc
+  src/db/version.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
   src/table/bloom_filter.cc
@@ -54,6 +55,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/manifest_test.cc
     tests/db/memtable_test.cc
     tests/db/skiplist_test.cc
+    tests/db/version_test.cc
     tests/db/write_batch_codec_test.cc
     tests/table/bloom_filter_test.cc
     tests/table/block_iterator_test.cc

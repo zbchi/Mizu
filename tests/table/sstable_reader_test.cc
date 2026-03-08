@@ -153,6 +153,32 @@ TEST(sstableReaderReadsAcrossDataBlocks) {
   }
 }
 
+TEST(sstableIteratorReadsInternalEntriesAcrossDataBlocks) {
+  ReaderTempDirectory directory;
+  const std::vector<Entry> entries = {
+      {"alpha", 7, ValueType::kValue, "new"},
+      {"alpha", 5, ValueType::kDeletion, ""},
+      {"alpha", 3, ValueType::kValue, "old"},
+      {"beta", 2, ValueType::kValue, "value"},
+  };
+  auto reader = openReader(buildTable(directory, entries, 1));
+  auto iterator = reader->newIterator({});
+
+  iterator->seekToFirst();
+  std::size_t index = 0;
+  while (iterator->valid()) {
+    ASSERT_TRUE(index < entries.size());
+    ASSERT_EQ(iterator->internalKey(),
+              encodeInternalKey(entries[index].user_key,
+                                entries[index].sequence, entries[index].type));
+    ASSERT_EQ(iterator->value(), entries[index].value);
+    ++index;
+    iterator->next();
+  }
+  ASSERT_OK(iterator->status());
+  ASSERT_EQ(index, entries.size());
+}
+
 TEST(sstableReaderSelectsVisibleVersionAndTombstone) {
   ReaderTempDirectory directory;
   const auto path = buildTable(directory,
