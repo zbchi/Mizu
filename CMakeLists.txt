@@ -6,6 +6,7 @@ option(LSMTREE_BUILD_TESTS "Build lsmtree tests" ON)
 find_package(Threads REQUIRED)
 
 add_library(lsmtree
+  src/db/compaction.cc
   src/db/db.cc
   src/db/db_files.cc
   src/db/db_impl.cc
@@ -48,6 +49,7 @@ if(LSMTREE_BUILD_TESTS)
 
   add_executable(lsmtree_tests
     tests/test_main.cc
+    tests/db/compaction_test.cc
     tests/db/db_files_test.cc
     tests/db/db_test.cc
     tests/db/flush_memtable_test.cc
