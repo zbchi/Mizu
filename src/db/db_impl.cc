@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "db/compaction.h"
 #include "db/filename.h"
 #include "db/flush_memtable.h"
 #include "db/write_batch_codec.h"
@@ -333,6 +334,62 @@ Status DBImpl::flushImmutableMemTable() {
   }
 
   removeObsoleteWalFilesBestEffort(directory_, live_wal_number);
+  return Status::success();
+}
+
+// 输出文件和候选状态全部准备完成后，先提交 Manifest，再切换内存 Version
+Status DBImpl::compactLevel0() {
+  std::optional<CompactionPlan> plan;
+  std::uint64_t output_number = 0;
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    plan = pickLevel0Compaction(current_version_);
+    if (!plan) return Status::success();
+    if (next_file_number_ == std::numeric_limits<std::uint64_t>::max()) {
+      return Status::ioError("database file number space is exhausted");
+    }
+    output_number = next_file_number_++;
+  }
+
+  CompactionOutput output;
+  Status status = buildLevel1Table(*plan, output_number, directory_, output);
+  if (!status.ok()) return status;
+
+  ManifestState candidate;
+  std::shared_ptr<const Version> candidate_version;
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    // 磁盘 Version 只由这一条后台线程修改，构建期间输入不会被替换
+    assert(current_version_ == plan->input_version);
+    assert(plan->level1_end <= manifest_.level1_tables.size());
+
+    candidate = manifest_;
+    candidate.level0_tables.clear();
+    const auto begin = candidate.level1_tables.begin();
+    candidate.level1_tables.erase(begin + plan->level1_begin,
+                                  begin + plan->level1_end);
+    candidate.level1_tables.insert(
+        candidate.level1_tables.begin() + plan->level1_begin, output.meta);
+    candidate_version = plan->input_version->withLevel0Compaction(
+        plan->level1_begin, plan->level1_end, output.meta, output.reader);
+  }
+
+  status = writeManifest(manifestFileName(directory_),
+                         manifestTemporaryFileName(directory_), candidate);
+  if (!status.ok()) {
+    // Manifest 仍指向旧 Version，新输出只是未发布文件
+    candidate_version.reset();
+    output.reader.reset();
+    removeFileBestEffort(sstableFileName(directory_, output_number));
+    return status;
+  }
+
+  {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    assert(current_version_ == plan->input_version);
+    current_version_ = std::move(candidate_version);
+    manifest_ = std::move(candidate);
+  }
   return Status::success();
 }
 

@@ -36,6 +36,11 @@ class Version final {
       TableMeta meta,
       std::shared_ptr<const SSTableReader> reader) const;
 
+  // 清空全部 L0，并用一个归并输出替换参与压缩的连续 L1 区间
+  std::shared_ptr<const Version> withLevel0Compaction(
+      std::size_t level1_begin, std::size_t level1_end, TableMeta output_meta,
+      std::shared_ptr<const SSTableReader> output_reader) const;
+
   const std::vector<Table>& level0() const noexcept { return level0_; }
   const std::vector<Table>& level1() const noexcept { return level1_; }
 

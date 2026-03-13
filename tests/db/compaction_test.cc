@@ -171,6 +171,17 @@ TEST(level0CompactionLosslesslyMergesVersionsAndTombstones) {
     ASSERT_EQ(entries[index].internal_key, wanted[index].internal_key);
     ASSERT_EQ(entries[index].value, wanted[index].value);
   }
+
+  const auto installed = plan->input_version->withLevel0Compaction(
+      plan->level1_begin, plan->level1_end, output.meta, output.reader);
+  ASSERT_TRUE(installed != plan->input_version);
+  ASSERT_TRUE(installed->level0().empty());
+  ASSERT_EQ(installed->level1().size(), 2U);
+  ASSERT_EQ(installed->level1()[0].meta.number, output.meta.number);
+  ASSERT_EQ(installed->level1()[1].meta.number,
+            plan->input_version->level1()[1].meta.number);
+  ASSERT_EQ(plan->input_version->level0().size(), 4U);
+  ASSERT_EQ(plan->input_version->level1().size(), 2U);
 }
 
 TEST(level0CompactionRejectsDuplicateInternalKeysAndCleansOutput) {

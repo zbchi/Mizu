@@ -55,6 +55,8 @@ class DBImpl final : public DB {
   // 后台线程串行处理唯一的 immutable MemTable
   void backgroundLoop();
   Status flushImmutableMemTable();
+  // 构建并原子发布一次 L0 到 L1 的压缩结果
+  Status compactLevel0();
   // 使用给定起始序号将完整 batch 写入 MemTable
   void applyBatch(const WriteBatch& batch, SequenceNumber first_sequence);
 

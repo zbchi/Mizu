@@ -110,4 +110,23 @@ std::shared_ptr<const Version> Version::withLevel0Table(
   return next;
 }
 
+std::shared_ptr<const Version> Version::withLevel0Compaction(
+    std::size_t level1_begin, std::size_t level1_end, TableMeta output_meta,
+    std::shared_ptr<const SSTableReader> output_reader) const {
+  assert(!level0_.empty());
+  assert(level1_begin <= level1_end);
+  assert(level1_end <= level1_.size());
+  assert(output_reader != nullptr);
+
+  auto next = std::make_shared<Version>();
+  next->level1_.reserve(level1_.size() - (level1_end - level1_begin) + 1U);
+  next->level1_.insert(next->level1_.end(), level1_.begin(),
+                       level1_.begin() + level1_begin);
+  next->level1_.push_back(
+      Table{std::move(output_meta), std::move(output_reader)});
+  next->level1_.insert(next->level1_.end(), level1_.begin() + level1_end,
+                       level1_.end());
+  return next;
+}
+
 }
