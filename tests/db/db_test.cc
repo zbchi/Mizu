@@ -7,11 +7,15 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 
 #include "db/filename.h"
+#include "db/internal_key.h"
 #include "db/manifest.h"
 #include "db/write_batch_codec.h"
+#include "table/sstable_builder.h"
 #include "test.h"
 #include "wal/wal_writer.h"
 
@@ -87,6 +91,66 @@ void appendEncodedBatch(const std::filesystem::path& path,
   std::unique_ptr<WalWriter> writer;
   ASSERT_OK(WalWriter::open(path, writer));
   ASSERT_OK(writer->append(payload));
+}
+
+TableMeta buildSingleEntryTable(const std::filesystem::path& directory,
+                                std::uint64_t number, Slice key,
+                                SequenceNumber sequence, Slice value) {
+  std::unique_ptr<SSTableBuilder> builder;
+  ASSERT_OK(SSTableBuilder::open(sstableFileName(directory, number), {},
+                                 builder));
+  ASSERT_OK(builder->add(encodeInternalKey(key, sequence, ValueType::kValue),
+                         value));
+  SSTableMeta completed;
+  ASSERT_OK(builder->finish(completed));
+  return TableMeta{number, completed.file_size, completed.smallest_key,
+                   completed.largest_key};
+}
+
+ManifestState waitForCompaction(const std::filesystem::path& directory,
+                                std::uint64_t previous_output = 0) {
+  for (int attempt = 0; attempt < 2000; ++attempt) {
+    ManifestState state;
+    ASSERT_OK(readManifest(manifestFileName(directory), state));
+    if (state.level0_tables.empty() && state.level1_tables.size() == 1U &&
+        state.level1_tables[0].number != previous_output) {
+      return state;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(false);
+  return {};
+}
+
+bool hasOnlyManifestSSTables(const std::filesystem::path& directory,
+                             const ManifestState& manifest) {
+  std::set<std::uint64_t> live;
+  for (const TableMeta& table : manifest.level0_tables) {
+    live.insert(table.number);
+  }
+  for (const TableMeta& table : manifest.level1_tables) {
+    live.insert(table.number);
+  }
+
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    std::uint64_t number = 0;
+    NumberedFileType type = NumberedFileType::kWal;
+    if (!parseNumberedFileName(entry.path(), number, type)) continue;
+    if (type == NumberedFileType::kSSTableTemporary) return false;
+    if (type == NumberedFileType::kSSTable && live.count(number) == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void waitForObsoleteSSTableCleanup(const std::filesystem::path& directory,
+                                   const ManifestState& manifest) {
+  for (int attempt = 0; attempt < 2000; ++attempt) {
+    if (hasOnlyManifestSSTables(directory, manifest)) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(false);
 }
 
 }
@@ -356,25 +420,94 @@ TEST(backgroundFlushRecoversSSTableAndCurrentWal) {
   ASSERT_EQ(get(*db, "tail"), "from-wal");
 }
 
-TEST(backgroundFlushSerializesRepeatedMemTableRotations) {
+TEST(backgroundCompactionRepeatsAndPreservesSnapshots) {
   TempDirectory directory;
-  constexpr std::uint64_t kEntryCount = 12;
+  SnapshotHandle snapshot;
+  std::uint64_t first_output = 0;
   {
     DB::Handle db = openWithTinyWriteBuffer(directory.path());
-    for (std::uint64_t index = 0; index < kEntryCount; ++index) {
-      ASSERT_OK(db->put({}, "key-" + std::to_string(index),
-                        "value-" + std::to_string(index)));
+    for (std::uint64_t index = 0; index < 5; ++index) {
+      ASSERT_OK(db->put({}, "key", "value-" + std::to_string(index)));
     }
+    ManifestState state = waitForCompaction(directory.path());
+    first_output = state.level1_tables[0].number;
+    ASSERT_OK(db->newSnapshot(&snapshot));
+
+    for (std::uint64_t index = 5; index < 9; ++index) {
+      ASSERT_OK(db->put({}, "key", "value-" + std::to_string(index)));
+    }
+    state = waitForCompaction(directory.path(), first_output);
+    ASSERT_EQ(get(*db, "key"), "value-8");
+    std::string value;
+    ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
+    ASSERT_EQ(value, "value-4");
+    waitForObsoleteSSTableCleanup(directory.path(), state);
+    ASSERT_TRUE(!std::filesystem::exists(
+        sstableFileName(directory.path(), first_output)));
   }
 
-  ManifestState state;
-  ASSERT_OK(readManifest(manifestFileName(directory.path()), state));
-  ASSERT_EQ(state.level0_tables.size(), kEntryCount - 1U);
-
   DB::Handle db = openWithTinyWriteBuffer(directory.path());
-  for (std::uint64_t index = 0; index < kEntryCount; ++index) {
-    ASSERT_EQ(get(*db, "key-" + std::to_string(index)),
-              "value-" + std::to_string(index));
+  ASSERT_EQ(get(*db, "key"), "value-8");
+}
+
+TEST(recoveryRemovesUnreferencedSSTablesAndTemporaryFiles) {
+  TempDirectory directory;
+  { DB::Handle db = openOrCreate(directory.path()); }
+
+  const auto orphan = sstableFileName(directory.path(), 2);
+  const auto temporary = sstableTemporaryFileName(directory.path(), 3);
+  std::ofstream(orphan).put('x');
+  std::ofstream(temporary).put('x');
+
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_TRUE(!std::filesystem::exists(orphan));
+  ASSERT_TRUE(!std::filesystem::exists(temporary));
+}
+
+TEST(compactionManifestFailureKeepsOldVersionAndRetriesAfterRestart) {
+  TempDirectory directory;
+  { DB::Handle db = openOrCreate(directory.path()); }
+
+  ManifestState manifest;
+  manifest.flushed_sequence = 4;
+  manifest.oldest_wal_number = 1;
+  for (std::uint64_t index = 0; index < 4; ++index) {
+    manifest.level0_tables.insert(
+        manifest.level0_tables.begin(),
+        buildSingleEntryTable(directory.path(), index + 2U,
+                              "key-" + std::to_string(index), index + 1U,
+                              "value-" + std::to_string(index)));
+  }
+  ASSERT_OK(writeManifest(manifestFileName(directory.path()),
+                          manifestTemporaryFileName(directory.path()),
+                          manifest));
+
+  const auto manifest_temporary =
+      manifestTemporaryFileName(directory.path());
+  std::filesystem::create_directory(manifest_temporary);
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    Status status;
+    for (int attempt = 0; attempt < 2000; ++attempt) {
+      status = db->put({}, "tail-" + std::to_string(attempt), "value");
+      if (!status.ok()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(status.code(), StatusCode::kIOError);
+    ASSERT_EQ(get(*db, "key-0"), "value-0");
+    ASSERT_TRUE(!std::filesystem::exists(
+        sstableFileName(directory.path(), 6)));
+  }
+
+  std::filesystem::remove(manifest_temporary);
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    const ManifestState state = waitForCompaction(directory.path());
+    waitForObsoleteSSTableCleanup(directory.path(), state);
+    for (std::uint64_t index = 0; index < 4; ++index) {
+      ASSERT_EQ(get(*db, "key-" + std::to_string(index)),
+                "value-" + std::to_string(index));
+    }
   }
 }
 

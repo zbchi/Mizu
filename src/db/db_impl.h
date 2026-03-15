@@ -52,8 +52,9 @@ class DBImpl final : public DB {
   Status makeRoomForWrite(std::unique_lock<std::shared_mutex>& lock);
   // 创建新 WAL 并将当前 MemTable 原子切换为 immutable
   Status rotateMemTable();
-  // 后台线程串行处理唯一的 immutable MemTable
+  // 后台线程串行处理 immutable flush 和 L0 compaction
   void backgroundLoop();
+  bool needsLevel0Compaction() const noexcept;
   Status flushImmutableMemTable();
   // 构建并原子发布一次 L0 到 L1 的压缩结果
   Status compactLevel0();

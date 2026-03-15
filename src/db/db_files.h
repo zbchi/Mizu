@@ -9,6 +9,8 @@
 
 namespace lsmtree {
 
+struct ManifestState;
+
 // 通过 RAII 持有数据库目录的 POSIX 文件锁
 class FileLock {
  public:
@@ -49,5 +51,8 @@ void removeFileBestEffort(const std::filesystem::path& path);
 void removeObsoleteWalFilesBestEffort(
     const std::filesystem::path& directory,
     std::uint64_t live_wal_number);
+void removeObsoleteSSTableFilesBestEffort(
+    const std::filesystem::path& directory,
+    const ManifestState& manifest);
 
 }

@@ -8,6 +8,7 @@
 #include <string>
 
 #include "db/filename.h"
+#include "db/manifest.h"
 #include "test.h"
 
 namespace lsmtree {
@@ -62,6 +63,17 @@ TEST(databaseDirectoryScanAndWalCleanupUseNumberedFilesOnly) {
   ASSERT_TRUE(!std::filesystem::exists(walFileName(directory.path(), 3)));
   ASSERT_TRUE(std::filesystem::exists(walFileName(directory.path(), 9)));
   ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 12)));
+
+  touch(sstableFileName(directory.path(), 13));
+  ManifestState manifest;
+  manifest.level0_tables.push_back(TableMeta{12, 1, "", ""});
+  removeObsoleteSSTableFilesBestEffort(directory.path(), manifest);
+  ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 12)));
+  ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 13)));
+  ASSERT_TRUE(
+      !std::filesystem::exists(sstableTemporaryFileName(directory.path(), 15)));
+  ASSERT_TRUE(std::filesystem::exists(walFileName(directory.path(), 9)));
+  ASSERT_TRUE(std::filesystem::exists(directory.path() / "unrelated"));
 }
 
 }

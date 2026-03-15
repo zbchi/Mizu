@@ -106,7 +106,10 @@ Status DBImpl::initializeNewDatabase(const DirectoryContents& files) {
   status = writeManifest(manifestFileName(directory_),
                          manifestTemporaryFileName(directory_), manifest_);
   if (!status.ok()) return status;
-  return loadVersion();
+  status = loadVersion();
+  if (!status.ok()) return status;
+  removeObsoleteSSTableFilesBestEffort(directory_, manifest_);
+  return Status::success();
 }
 
 // 已有 Manifest 时依次恢复 L0 serving state 和仍然存活的 WAL
@@ -116,7 +119,10 @@ Status DBImpl::recoverDatabase(const DirectoryContents& files) {
 
   status = loadVersion();
   if (!status.ok()) return status;
-  return recoverWalFiles(files.wal_numbers);
+  status = recoverWalFiles(files.wal_numbers);
+  if (!status.ok()) return status;
+  removeObsoleteSSTableFilesBestEffort(directory_, manifest_);
+  return Status::success();
 }
 
 // 写入前检查是否需要轮转 WAL 成功后才更新 MemTable
@@ -257,16 +263,26 @@ Status DBImpl::rotateMemTable() {
   return Status::success();
 }
 
-// 唯一后台线程串行消费 immutable MemTable
+bool DBImpl::needsLevel0Compaction() const noexcept {
+  return current_version_->level0().size() >= kLevel0CompactionTrigger;
+}
+
+// 唯一后台线程串行执行 L0 压缩和 immutable MemTable flush
 void DBImpl::backgroundLoop() {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   while (true) {
-    background_cv_.wait(
-        lock, [this] { return shutting_down_ || immutable_.has_value(); });
-    if (!immutable_) return;
+    background_cv_.wait(lock, [this] {
+      return shutting_down_ || immutable_.has_value() ||
+             needsLevel0Compaction();
+    });
+    if (shutting_down_ && !immutable_) return;
+
+    // 达到 L0 硬阈值后先压缩，防止持续 flush 让 L0 无界增长；关闭时只
+    // 完成已经存在的 immutable flush，不额外启动 compaction。
+    const bool compact = !shutting_down_ && needsLevel0Compaction();
 
     lock.unlock();
-    const Status status = flushImmutableMemTable();
+    const Status status = compact ? compactLevel0() : flushImmutableMemTable();
     lock.lock();
 
     if (!status.ok()) {
@@ -390,6 +406,7 @@ Status DBImpl::compactLevel0() {
     current_version_ = std::move(candidate_version);
     manifest_ = std::move(candidate);
   }
+  removeObsoleteSSTableFilesBestEffort(directory_, manifest_);
   return Status::success();
 }
 

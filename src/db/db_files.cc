@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <set>
 #include <utility>
 
 #include "db/filename.h"
+#include "db/manifest.h"
 
 namespace lsmtree {
 namespace {
@@ -151,6 +153,35 @@ void removeObsoleteWalFilesBestEffort(
     }
     std::error_code ignored;
     std::filesystem::remove(entry.path(), ignored);
+  }
+}
+
+void removeObsoleteSSTableFilesBestEffort(
+    const std::filesystem::path& directory,
+    const ManifestState& manifest) {
+  std::set<std::uint64_t> live;
+  for (const TableMeta& table : manifest.level0_tables) {
+    live.insert(table.number);
+  }
+  for (const TableMeta& table : manifest.level1_tables) {
+    live.insert(table.number);
+  }
+
+  std::error_code error;
+  std::filesystem::directory_iterator iterator(directory, error);
+  if (error) return;
+
+  for (const auto& entry : iterator) {
+    std::uint64_t number = 0;
+    NumberedFileType type = NumberedFileType::kWal;
+    if (!parseNumberedFileName(entry.path(), number, type)) continue;
+    if (type == NumberedFileType::kSSTable && live.count(number) != 0) {
+      continue;
+    }
+    if (type == NumberedFileType::kSSTable ||
+        type == NumberedFileType::kSSTableTemporary) {
+      removeFileBestEffort(entry.path());
+    }
   }
 }
 
