@@ -4,6 +4,7 @@
 #include <string>
 
 #include "db/internal_key.h"
+#include "db/internal_iterator.h"
 #include "db/lookup_result.h"
 #include "db/skiplist.h"
 #include "util/arena.h"
@@ -27,16 +28,18 @@ class MemTable {
 
   void add(SequenceNumber sequence, ValueType type, Slice key, Slice value);
 
-  class Iterator {
+  class Iterator final : public InternalIterator {
    public:
-    bool valid() const noexcept { return iterator_.valid(); }
+    bool valid() const noexcept override { return iterator_.valid(); }
 
-    void seekToFirst() { iterator_.seekToFirst(); }
-    void next() { iterator_.next(); }
+    void seekToFirst() override { iterator_.seekToFirst(); }
+    void seek(Slice target) override;
+    void next() override { iterator_.next(); }
 
     // 返回的 Slice 引用 MemTable 的 Arena
-    Slice internalKey() const;
-    Slice value() const;
+    Slice internalKey() const override;
+    Slice value() const override;
+    const Status& status() const noexcept override { return status_; }
 
    private:
     friend class MemTable;
@@ -44,6 +47,7 @@ class MemTable {
     explicit Iterator(const Table* table) : iterator_(table) {}
 
     Table::Iterator iterator_;
+    Status status_;
   };
 
   // 迭代期间 MemTable 必须保持存活且不可写

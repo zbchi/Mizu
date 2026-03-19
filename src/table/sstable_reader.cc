@@ -180,6 +180,40 @@ void SSTableIterator::seekToFirst() {
   if (index_->valid()) loadDataBlock();
 }
 
+void SSTableIterator::seek(Slice target) {
+  if (!status_.ok()) return;
+  ParsedInternalKey parsed{};
+  if (!parseInternalKey(target, parsed)) {
+    status_ = Status::invalidArgument("invalid InternalKey seek target");
+    data_.reset();
+    return;
+  }
+
+  data_.reset();
+  data_block_.clear();
+  // index entry 保存对应 data block 的最后一个 InternalKey。
+  // 先定位可能覆盖 target 的 block，再在 block 内继续 seek。
+  index_->seek(target);
+  if (!index_->status().ok()) {
+    status_ = index_->status();
+    return;
+  }
+  if (!index_->valid()) return;
+
+  loadDataBlock();
+  if (!status_.ok()) return;
+  data_->seek(target);
+  if (!data_->status().ok()) {
+    status_ = data_->status();
+    data_.reset();
+    return;
+  }
+  if (!data_->valid()) {
+    status_ = Status::corruption("SSTable index does not cover seek target");
+    data_.reset();
+  }
+}
+
 void SSTableIterator::next() {
   assert(valid());
   data_->next();

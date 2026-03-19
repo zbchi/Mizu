@@ -15,6 +15,7 @@ add_library(lsmtree
   src/db/internal_key.cc
   src/db/manifest.cc
   src/db/memtable.cc
+  src/db/merging_iterator.cc
   src/db/version.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
@@ -56,6 +57,7 @@ if(LSMTREE_BUILD_TESTS)
     tests/db/internal_key_test.cc
     tests/db/manifest_test.cc
     tests/db/memtable_test.cc
+    tests/db/merging_iterator_test.cc
     tests/db/skiplist_test.cc
     tests/db/version_test.cc
     tests/db/write_batch_codec_test.cc

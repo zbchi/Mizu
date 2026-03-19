@@ -11,6 +11,7 @@
 #include "db/db_files.h"
 #include "db/filename.h"
 #include "db/internal_key.h"
+#include "db/merging_iterator.h"
 #include "db/version.h"
 #include "table/sstable_builder.h"
 #include "table/sstable_reader.h"
@@ -25,19 +26,6 @@ Slice userKey(Slice internal_key) {
   assert(valid);
   return parsed.user_key;
 }
-
-struct IteratorGreater {
-  const std::vector<std::unique_ptr<SSTableIterator>>* iterators;
-
-  bool operator()(std::size_t lhs, std::size_t rhs) const {
-    // 堆中只保存 iterator 下标，比较时读取各 iterator 当前指向的 InternalKey
-    // priority_queue 默认把“较大”元素放在顶部，此处反向比较得到最小堆
-    const Slice left = (*iterators)[lhs]->internalKey();
-    const Slice right = (*iterators)[rhs]->internalKey();
-    const InternalKeyLess less;
-    return less(right, left);
-  }
-};
 
 Status renameTable(const std::filesystem::path& temporary_path,
                    const std::filesystem::path& final_path) {
@@ -122,7 +110,7 @@ Status buildLevel1Table(const CompactionPlan& plan,
 
   const std::size_t input_count =
       level0.size() + (plan.level1_end - plan.level1_begin);
-  std::vector<std::unique_ptr<SSTableIterator>> iterators;
+  std::vector<std::unique_ptr<InternalIterator>> iterators;
   iterators.reserve(input_count);
 
   // 把每张输入 SSTable 变成一个停在首条记录的有序流。先准备并校验全部
@@ -151,27 +139,18 @@ Status buildLevel1Table(const CompactionPlan& plan,
     if (!status.ok()) return status;
   }
 
-  // 堆元素是 iterator 下标，堆顶下标始终指向所有有序流中最小的当前
-  // InternalKey。每个输入在堆中至多出现一次，所以额外空间为 O(输入文件数)。
-  IteratorGreater greater{&iterators};
-  std::priority_queue<std::size_t, std::vector<std::size_t>, IteratorGreater>
-      heap(greater);
-  for (std::size_t index = 0; index < iterators.size(); ++index) {
-    heap.push(index);
-  }
-
   std::unique_ptr<SSTableBuilder> builder;
   Status status = SSTableBuilder::open(temporary_path, {}, builder);
   if (!status.ok()) return status;
 
   const InternalKeyLess less;
   std::string previous_key;
-  // 每轮弹出全局最小记录，写入输出，再推进它所属的 iterator 并放回堆。
-  // 此阶段不按 user key 折叠记录，旧版本和 tombstone 都原样保留。
-  while (!heap.empty()) {
-    const std::size_t index = heap.top();
-    heap.pop();
-    SSTableIterator& iterator = *iterators[index];
+  // MergingIterator 保证每轮提供所有输入中最小的 InternalKey；compaction
+  // 只负责把归并结果原样写入新表，不在这里折叠 user key 版本。
+  MergingIterator iterator(std::move(iterators));
+  iterator.seekToFirst();
+  if (!iterator.status().ok()) return iterator.status();
+  while (iterator.valid()) {
     const Slice key = iterator.internalKey();
 
     // SSTableBuilder 要求 key 严格递增；相同 InternalKey 表示输入违反了
@@ -182,12 +161,11 @@ Status buildLevel1Table(const CompactionPlan& plan,
     }
     status = builder->add(key, iterator.value());
     if (!status.ok()) return status;
-    // iterator.next() 会使当前 Slice 失效，推进前复制一份用于下轮顺序检查
+    // iterator.next() 会使当前 Slice 失效，推进前复制一份用于下轮顺序检查。
     previous_key.assign(key.data(), key.size());
 
     iterator.next();
     if (!iterator.status().ok()) return iterator.status();
-    if (iterator.valid()) heap.push(index);
   }
 
   // finish 写完尾部 data block、filter、index 和 footer，同步并关闭临时文件，

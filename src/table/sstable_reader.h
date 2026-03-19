@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "db/internal_iterator.h"
 #include "db/internal_key.h"
 #include "db/lookup_result.h"
 #include "lsmtree/db.h"
@@ -47,20 +48,21 @@ class SSTableReader final {
 };
 
 // 迭代器借用 SSTableReader 调用方必须让 reader 存活得更久
-class SSTableIterator final {
+class SSTableIterator final : public InternalIterator {
  public:
   ~SSTableIterator();
 
   SSTableIterator(const SSTableIterator&) = delete;
   SSTableIterator& operator=(const SSTableIterator&) = delete;
 
-  void seekToFirst();
-  void next();
+  void seekToFirst() override;
+  void seek(Slice target) override;
+  void next() override;
 
-  bool valid() const noexcept;
-  Slice internalKey() const;
-  Slice value() const;
-  const Status& status() const noexcept { return status_; }
+  bool valid() const noexcept override;
+  Slice internalKey() const override;
+  Slice value() const override;
+  const Status& status() const noexcept override { return status_; }
 
  private:
   friend class SSTableReader;

@@ -37,6 +37,19 @@ Slice MemTable::Iterator::internalKey() const {
   return entryInternalKey(iterator_.key());
 }
 
+void MemTable::Iterator::seek(Slice target) {
+  ParsedInternalKey parsed{};
+  assert(parseInternalKey(target, parsed));
+  assert(target.size() <= std::numeric_limits<std::uint32_t>::max());
+
+  // 跳表节点前带有 InternalKey 长度
+  // 只构造长度前缀和目标键即可定位
+  std::string seek_entry(kLengthSize, '\0');
+  encodeFixed32(seek_entry.data(), static_cast<std::uint32_t>(target.size()));
+  seek_entry.append(target.data(), target.size());
+  iterator_.seek(seek_entry.data());
+}
+
 Slice MemTable::Iterator::value() const {
   assert(valid());
   return entryValue(iterator_.key());
