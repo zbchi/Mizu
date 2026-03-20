@@ -123,10 +123,8 @@ class Iterator {
 
   virtual bool valid() const noexcept = 0;
   virtual void seekToFirst() = 0;
-  virtual void seekToLast() = 0;
   virtual void seek(Slice target) = 0;
   virtual void next() = 0;
-  virtual void prev() = 0;
 
   // 仅在 valid() 为 true 时读取 返回内容在迭代器下次移动前有效
   virtual Slice key() const = 0;
