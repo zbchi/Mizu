@@ -1,5 +1,7 @@
+#include <atomic>
 #include <random>
 #include <set>
+#include <thread>
 #include <vector>
 
 #include "db/skiplist.h"
@@ -105,6 +107,38 @@ TEST(skiplistMatchesOrderedReferenceForRandomOperations) {
       ASSERT_EQ(list_iterator.key(), *reference_iterator);
     }
   }
+}
+
+TEST(skiplistSupportsConcurrentReadersAndOneWriter) {
+  Arena arena;
+  TestSkipList list(IntComparator{}, &arena);
+  std::atomic<bool> done{false};
+  std::atomic<bool> ordered{true};
+
+  std::thread reader([&] {
+    while (!done.load(std::memory_order_acquire)) {
+      TestSkipList::Iterator iterator(&list);
+      iterator.seekToFirst();
+      int previous = -1;
+      while (iterator.valid()) {
+        const int current = iterator.key();
+        if (current <= previous)
+          ordered.store(false, std::memory_order_relaxed);
+        previous = current;
+        iterator.next();
+      }
+    }
+  });
+
+  for (int key = 0; key < 10000; ++key) list.insert(key);
+  done.store(true, std::memory_order_release);
+  reader.join();
+
+  ASSERT_TRUE(ordered.load(std::memory_order_relaxed));
+  const std::vector<int> entries = collect(list);
+  ASSERT_EQ(entries.size(), 10000U);
+  ASSERT_EQ(entries.front(), 0);
+  ASSERT_EQ(entries.back(), 9999);
 }
 
 }

@@ -35,7 +35,7 @@ class DBImpl final : public DB {
 
  private:
   struct ImmutableMemTable {
-    std::unique_ptr<MemTable> memtable;
+    std::shared_ptr<MemTable> memtable;
     std::uint64_t table_number = 0;
     SequenceNumber last_sequence = 0;
   };
@@ -71,7 +71,7 @@ class DBImpl final : public DB {
   std::shared_ptr<const Version> current_version_;
   SequenceNumber last_sequence_ = 0;
   mutable std::shared_mutex mutex_;
-  std::unique_ptr<MemTable> memtable_ = std::make_unique<MemTable>();
+  std::shared_ptr<MemTable> memtable_ = std::make_shared<MemTable>();
   std::optional<ImmutableMemTable> immutable_;
   std::condition_variable_any background_cv_;
   std::thread background_thread_;

@@ -10,6 +10,8 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "db/filename.h"
 #include "db/internal_key.h"
@@ -65,6 +67,17 @@ std::string get(DB& db, Slice key) {
   std::string value;
   ASSERT_OK(db.get({}, key, &value));
   return value;
+}
+
+std::vector<std::pair<std::string, std::string>> collect(Iterator& iterator) {
+  std::vector<std::pair<std::string, std::string>> entries;
+  iterator.seekToFirst();
+  while (iterator.valid()) {
+    entries.emplace_back(iterator.key(), iterator.value());
+    iterator.next();
+  }
+  ASSERT_OK(iterator.status());
+  return entries;
 }
 
 void flipLastByte(const std::filesystem::path& path) {
@@ -354,7 +367,7 @@ TEST(secondOpenIsBusyUntilFirstHandleIsReleased) {
   ASSERT_TRUE(second != nullptr);
 }
 
-TEST(snapshotWorksAndIteratorRemainsUnsupported) {
+TEST(snapshotWorksForPointReadsAndIterators) {
   TempDirectory directory;
   DB::Handle db = openOrCreate(directory.path());
   SnapshotHandle snapshot;
@@ -376,8 +389,14 @@ TEST(snapshotWorksAndIteratorRemainsUnsupported) {
   ASSERT_OK(db->get(ReadOptions{snapshot}, "key", &value));
   ASSERT_EQ(value, "before");
 
-  ASSERT_EQ(db->newIterator({}, &iterator).code(), StatusCode::kNotSupported);
-  ASSERT_TRUE(!iterator);
+  ASSERT_OK(db->newIterator(ReadOptions{snapshot}, &iterator));
+  ASSERT_TRUE(iterator != nullptr);
+  ASSERT_EQ(
+      collect(*iterator),
+      (std::vector<std::pair<std::string, std::string>>{{"key", "before"}}));
+
+  ASSERT_OK(db->newIterator({}, &iterator));
+  ASSERT_TRUE(collect(*iterator).empty());
 }
 
 TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
@@ -392,6 +411,75 @@ TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
             StatusCode::kNotFound);
   ASSERT_EQ(value, "unchanged");
   ASSERT_EQ(db->newSnapshot(nullptr).code(), StatusCode::kInvalidArgument);
+  ASSERT_EQ(db->newIterator({}, nullptr).code(), StatusCode::kInvalidArgument);
+}
+
+TEST(iteratorHidesLaterWritesToTheSameMutableMemTable) {
+  TempDirectory directory;
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_OK(db->put({}, "alpha", "old-a"));
+  ASSERT_OK(db->put({}, "charlie", "old-c"));
+
+  std::unique_ptr<Iterator> iterator;
+  ASSERT_OK(db->newIterator({}, &iterator));
+
+  ASSERT_OK(db->put({}, "alpha", "new-a"));
+  ASSERT_OK(db->put({}, "bravo", "new-b"));
+  ASSERT_OK(db->erase({}, "charlie"));
+
+  ASSERT_EQ(collect(*iterator),
+            (std::vector<std::pair<std::string, std::string>>{
+                {"alpha", "old-a"}, {"charlie", "old-c"}}));
+}
+
+TEST(iteratorPinsReadStateAcrossCompaction) {
+  TempDirectory directory;
+  { DB::Handle db = openOrCreate(directory.path()); }
+
+  ManifestState manifest;
+  manifest.flushed_sequence = 3;
+  manifest.oldest_wal_number = 1;
+  manifest.level0_tables.insert(
+      manifest.level0_tables.begin(),
+      buildSingleEntryTable(directory.path(), 2, "alpha", 1, "a"));
+  manifest.level0_tables.insert(
+      manifest.level0_tables.begin(),
+      buildSingleEntryTable(directory.path(), 3, "charlie", 2, "c"));
+  manifest.level0_tables.insert(
+      manifest.level0_tables.begin(),
+      buildSingleEntryTable(directory.path(), 4, "echo", 3, "e"));
+  ASSERT_OK(writeManifest(manifestFileName(directory.path()),
+                          manifestTemporaryFileName(directory.path()),
+                          manifest));
+
+  DB::Handle db = openWithTinyWriteBuffer(directory.path());
+  ASSERT_OK(db->put({}, "delta", "d"));
+
+  std::unique_ptr<Iterator> iterator;
+  ASSERT_OK(db->newIterator({}, &iterator));
+  iterator->seekToFirst();
+  ASSERT_TRUE(iterator->valid());
+  ASSERT_EQ(iterator->key(), "alpha");
+
+  // 新写入轮转旧 MemTable 并触发 L0 compaction
+  ASSERT_OK(db->put({}, "foxtrot", "f"));
+  const ManifestState compacted = waitForCompaction(directory.path());
+  waitForObsoleteSSTableCleanup(directory.path(), compacted);
+  for (std::uint64_t number = 2; number <= 5; ++number) {
+    ASSERT_TRUE(
+        !std::filesystem::exists(sstableFileName(directory.path(), number)));
+  }
+
+  std::vector<std::pair<std::string, std::string>> entries;
+  entries.emplace_back(iterator->key(), iterator->value());
+  for (iterator->next(); iterator->valid(); iterator->next()) {
+    entries.emplace_back(iterator->key(), iterator->value());
+  }
+  ASSERT_OK(iterator->status());
+  ASSERT_EQ(
+      entries,
+      (std::vector<std::pair<std::string, std::string>>{
+          {"alpha", "a"}, {"charlie", "c"}, {"delta", "d"}, {"echo", "e"}}));
 }
 
 TEST(backgroundFlushRecoversSSTableAndCurrentWal) {

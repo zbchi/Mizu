@@ -6,8 +6,15 @@
 namespace lsmtree {
 
 DBIterator::DBIterator(std::unique_ptr<InternalIterator> input,
-                       SequenceNumber visible_sequence)
-    : input_(std::move(input)), visible_sequence_(visible_sequence) {
+                       SequenceNumber visible_sequence,
+                       std::shared_ptr<const MemTable> mutable_memtable,
+                       std::shared_ptr<const MemTable> immutable_memtable,
+                       std::shared_ptr<const Version> version)
+    : mutable_memtable_(std::move(mutable_memtable)),
+      immutable_memtable_(std::move(immutable_memtable)),
+      version_(std::move(version)),
+      input_(std::move(input)),
+      visible_sequence_(visible_sequence) {
   assert(input_ != nullptr);
   assert(visible_sequence_ <= kMaxSequenceNumber);
 }

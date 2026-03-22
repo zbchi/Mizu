@@ -8,8 +8,11 @@
 #include <vector>
 
 #include "db/compaction.h"
+#include "db/db_iterator.h"
 #include "db/filename.h"
 #include "db/flush_memtable.h"
+#include "db/internal_iterator.h"
+#include "db/merging_iterator.h"
 #include "db/write_batch_codec.h"
 #include "db/write_batch_internal.h"
 #include "table/sstable_reader.h"
@@ -247,7 +250,7 @@ Status DBImpl::rotateMemTable() {
 
   const std::uint64_t table_number = next_file_number_;
   const std::uint64_t new_wal_number = next_file_number_ + 1U;
-  auto new_memtable = std::make_unique<MemTable>();
+  auto new_memtable = std::make_shared<MemTable>();
   std::unique_ptr<WalWriter> new_wal;
   Status status =
       WalWriter::open(walFileName(directory_, new_wal_number), new_wal);
@@ -482,9 +485,54 @@ Status DBImpl::newSnapshot(SnapshotHandle* snapshot) const {
 
 Status DBImpl::newIterator(const ReadOptions& options,
                            std::unique_ptr<Iterator>* iterator) const {
-  static_cast<void>(options);
-  static_cast<void>(iterator);
-  return Status::notSupported("iterators are not implemented yet");
+  if (iterator == nullptr) {
+    return Status::invalidArgument("iterator must not be null");
+  }
+  *iterator = nullptr;
+
+  SequenceNumber visible_sequence = 0;
+  if (options.snapshot) {
+    const auto snapshot =
+        std::dynamic_pointer_cast<const SnapshotImpl>(options.snapshot);
+    if (!snapshot) {
+      return Status::invalidArgument("invalid snapshot");
+    }
+    visible_sequence = snapshot->sequence;
+  }
+
+  std::shared_ptr<const MemTable> mutable_memtable;
+  std::shared_ptr<const MemTable> immutable_memtable;
+  std::shared_ptr<const Version> version;
+  {
+    // 锁内固定可见序号和全部读取层
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    if (!options.snapshot) visible_sequence = last_sequence_;
+    mutable_memtable = memtable_;
+    if (immutable_) immutable_memtable = immutable_->memtable;
+    version = current_version_;
+  }
+
+  std::vector<std::unique_ptr<InternalIterator>> children;
+  children.reserve(1U + (immutable_memtable ? 1U : 0U) +
+                   version->level0().size() + version->level1().size());
+  children.push_back(
+      std::make_unique<MemTable::Iterator>(mutable_memtable->newIterator()));
+  if (immutable_memtable) {
+    children.push_back(std::make_unique<MemTable::Iterator>(
+        immutable_memtable->newIterator()));
+  }
+  for (const Version::Table& table : version->level0()) {
+    children.push_back(table.reader->newIterator(options));
+  }
+  for (const Version::Table& table : version->level1()) {
+    children.push_back(table.reader->newIterator(options));
+  }
+
+  auto merged = std::make_unique<MergingIterator>(std::move(children));
+  *iterator = std::make_unique<DBIterator>(
+      std::move(merged), visible_sequence, std::move(mutable_memtable),
+      std::move(immutable_memtable), std::move(version));
+  return Status::success();
 }
 
 }
