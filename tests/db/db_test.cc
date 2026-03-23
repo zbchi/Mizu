@@ -552,6 +552,85 @@ TEST(recoveryRemovesUnreferencedSSTablesAndTemporaryFiles) {
   ASSERT_TRUE(!std::filesystem::exists(temporary));
 }
 
+TEST(recoveryReplaysWalAndRemovesValidUnreferencedSSTable) {
+  TempDirectory directory;
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    ASSERT_OK(db->put({Durability::kSync}, "from-wal", "value"));
+  }
+
+  // 模拟 SST 已经完成并 rename 但 Manifest 尚未提交；旧 WAL 仍是事实来源。
+  buildSingleEntryTable(directory.path(), 2, "orphan", 2, "stale-value");
+  ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 2)));
+
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "from-wal"), "value");
+  std::string value = "unchanged";
+  ASSERT_EQ(db->get({}, "orphan", &value).code(), StatusCode::kNotFound);
+  ASSERT_EQ(value, "unchanged");
+  ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 2)));
+}
+
+TEST(recoveryKeepsEveryManifestRequiredWalAcrossRepeatedRestart) {
+  TempDirectory directory;
+  { DB::Handle db = openOrCreate(directory.path()); }
+
+  WriteBatch first;
+  first.put("one", "1");
+  appendEncodedBatch(walFileName(directory.path(), 1), 1, first);
+
+  WriteBatch second;
+  second.put("two", "2");
+  appendEncodedBatch(walFileName(directory.path(), 2), 2, second);
+
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    ASSERT_EQ(get(*db, "one"), "1");
+    ASSERT_EQ(get(*db, "two"), "2");
+    ASSERT_TRUE(std::filesystem::exists(walFileName(directory.path(), 1)));
+    ASSERT_TRUE(std::filesystem::exists(walFileName(directory.path(), 2)));
+  }
+
+  // 首次 recovery 后立即再次崩溃/重启，仍必须拥有 Manifest 要求的全部 WAL。
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "one"), "1");
+  ASSERT_EQ(get(*db, "two"), "2");
+}
+
+TEST(recoveryUsesCommittedManifestAndCleansOldFiles) {
+  TempDirectory directory;
+  { DB::Handle db = openOrCreate(directory.path()); }
+
+  buildSingleEntryTable(directory.path(), 2, "key", 1, "old");
+  const TableMeta new_table =
+      buildSingleEntryTable(directory.path(), 3, "key", 2, "new");
+
+  // WAL 1 和 SST 2 是提交前的旧状态；WAL 4 是提交后的当前日志。
+  std::unique_ptr<WalWriter> current_wal;
+  ASSERT_OK(WalWriter::open(walFileName(directory.path(), 4), current_wal));
+  current_wal.reset();
+
+  ManifestState committed;
+  committed.flushed_sequence = 2;
+  committed.oldest_wal_number = 4;
+  committed.level1_tables.push_back(new_table);
+  ASSERT_OK(writeManifest(manifestFileName(directory.path()),
+                          manifestTemporaryFileName(directory.path()),
+                          committed));
+
+  DB::Handle db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "key"), "new");
+  ASSERT_TRUE(!std::filesystem::exists(walFileName(directory.path(), 1)));
+  ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 2)));
+  ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 3)));
+
+  ASSERT_OK(db->put({}, "next", "value"));
+  db.reset();
+  db = openOrCreate(directory.path());
+  ASSERT_EQ(get(*db, "key"), "new");
+  ASSERT_EQ(get(*db, "next"), "value");
+}
+
 TEST(compactionManifestFailureKeepsOldVersionAndRetriesAfterRestart) {
   TempDirectory directory;
   { DB::Handle db = openOrCreate(directory.path()); }

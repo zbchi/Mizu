@@ -124,6 +124,11 @@ Status DBImpl::recoverDatabase(const DirectoryContents& files) {
   if (!status.ok()) return status;
   status = recoverWalFiles(files.wal_numbers);
   if (!status.ok()) return status;
+  // 多个 WAL 可能共同承载尚未 flush 的连续数据。恢复把它们合并进一个
+  // MemTable 后，Manifest 仍引用原来的 replay 下界；在下一次 flush 提交前
+  // 只能删除低于该边界的 WAL，否则再次崩溃会缺失恢复输入。
+  removeObsoleteWalFilesBestEffort(directory_,
+                                   manifest_.oldest_wal_number);
   removeObsoleteSSTableFilesBestEffort(directory_, manifest_);
   return Status::success();
 }
