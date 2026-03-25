@@ -12,6 +12,7 @@
 #include "db/db_files.h"
 #include "db/manifest.h"
 #include "db/memtable.h"
+#include "db/snapshot.h"
 #include "db/version.h"
 #include "lsmtree/db.h"
 
@@ -71,6 +72,8 @@ class DBImpl final : public DB {
   std::shared_ptr<const Version> current_version_;
   SequenceNumber last_sequence_ = 0;
   mutable std::shared_mutex mutex_;
+  std::shared_ptr<SnapshotTracker> snapshots_ =
+      std::make_shared<SnapshotTracker>();
   std::shared_ptr<MemTable> memtable_ = std::make_shared<MemTable>();
   std::optional<ImmutableMemTable> immutable_;
   std::condition_variable_any background_cv_;

@@ -25,9 +25,22 @@ namespace {
 // 快照只保存创建时已经提交的最大 sequence
 class SnapshotImpl final : public Snapshot {
  public:
-  explicit SnapshotImpl(SequenceNumber sequence) : sequence(sequence) {}
+  SnapshotImpl(SequenceNumber sequence,
+               std::shared_ptr<SnapshotTracker> tracker)
+      : sequence(sequence), tracker_(std::move(tracker)) {
+    tracker_->add(sequence);
+  }
+
+  ~SnapshotImpl() override { tracker_->remove(sequence); }
+
+  bool isFrom(const std::shared_ptr<SnapshotTracker>& tracker) const noexcept {
+    return tracker_ == tracker;
+  }
 
   SequenceNumber sequence;
+
+ private:
+  std::shared_ptr<SnapshotTracker> tracker_;
 };
 
 }
@@ -367,7 +380,8 @@ Status DBImpl::compactLevel0() {
   std::uint64_t output_number = 0;
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    plan = pickLevel0Compaction(current_version_);
+    plan = pickLevel0Compaction(current_version_,
+                                snapshots_->oldest(last_sequence_));
     if (!plan) return Status::success();
     if (next_file_number_ == std::numeric_limits<std::uint64_t>::max()) {
       return Status::ioError("database file number space is exhausted");
@@ -392,8 +406,10 @@ Status DBImpl::compactLevel0() {
     const auto begin = candidate.level1_tables.begin();
     candidate.level1_tables.erase(begin + plan->level1_begin,
                                   begin + plan->level1_end);
-    candidate.level1_tables.insert(
-        candidate.level1_tables.begin() + plan->level1_begin, output.meta);
+    if (output.reader) {
+      candidate.level1_tables.insert(
+          candidate.level1_tables.begin() + plan->level1_begin, output.meta);
+    }
     candidate_version = plan->input_version->withLevel0Compaction(
         plan->level1_begin, plan->level1_end, output.meta, output.reader);
   }
@@ -443,7 +459,7 @@ Status DBImpl::get(const ReadOptions& options, Slice key,
   if (options.snapshot) {
     const auto snapshot =
         std::dynamic_pointer_cast<const SnapshotImpl>(options.snapshot);
-    if (!snapshot) {
+    if (!snapshot || !snapshot->isFrom(snapshots_)) {
       return Status::invalidArgument("invalid snapshot");
     }
     visible_sequence = snapshot->sequence;
@@ -484,7 +500,8 @@ Status DBImpl::newSnapshot(SnapshotHandle* snapshot) const {
   }
 
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  *snapshot = std::make_shared<SnapshotImpl>(last_sequence_);
+  const SequenceNumber sequence = last_sequence_;
+  *snapshot = std::make_shared<SnapshotImpl>(sequence, snapshots_);
   return Status::success();
 }
 
@@ -499,7 +516,7 @@ Status DBImpl::newIterator(const ReadOptions& options,
   if (options.snapshot) {
     const auto snapshot =
         std::dynamic_pointer_cast<const SnapshotImpl>(options.snapshot);
-    if (!snapshot) {
+    if (!snapshot || !snapshot->isFrom(snapshots_)) {
       return Status::invalidArgument("invalid snapshot");
     }
     visible_sequence = snapshot->sequence;

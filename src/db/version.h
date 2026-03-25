@@ -36,7 +36,8 @@ class Version final {
       TableMeta meta,
       std::shared_ptr<const SSTableReader> reader) const;
 
-  // 清空全部 L0，并用一个归并输出替换参与压缩的连续 L1 区间
+  // 清空全部 L0，并用可选归并输出替换参与压缩的连续 L1 区间。
+  // output_reader 为空时表示回收了全部输入记录。
   std::shared_ptr<const Version> withLevel0Compaction(
       std::size_t level1_begin, std::size_t level1_end, TableMeta output_meta,
       std::shared_ptr<const SSTableReader> output_reader) const;

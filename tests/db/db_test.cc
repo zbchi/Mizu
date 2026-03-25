@@ -18,6 +18,7 @@
 #include "db/manifest.h"
 #include "db/write_batch_codec.h"
 #include "table/sstable_builder.h"
+#include "table/sstable_reader.h"
 #include "test.h"
 #include "wal/wal_writer.h"
 
@@ -164,6 +165,26 @@ void waitForObsoleteSSTableCleanup(const std::filesystem::path& directory,
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   ASSERT_TRUE(false);
+}
+
+std::size_t countLevel1Versions(const std::filesystem::path& directory,
+                                const ManifestState& manifest, Slice key) {
+  std::size_t count = 0;
+  for (const TableMeta& meta : manifest.level1_tables) {
+    std::unique_ptr<SSTableReader> reader;
+    ASSERT_OK(
+        SSTableReader::open(sstableFileName(directory, meta.number), reader));
+    auto iterator = reader->newIterator({});
+    iterator->seekToFirst();
+    while (iterator->valid()) {
+      ParsedInternalKey parsed{};
+      ASSERT_TRUE(parseInternalKey(iterator->internalKey(), parsed));
+      if (parsed.user_key == key) ++count;
+      iterator->next();
+    }
+    ASSERT_OK(iterator->status());
+  }
+  return count;
 }
 
 }
@@ -414,6 +435,36 @@ TEST(snapshotBeforeFirstWriteSeesAnEmptyDatabase) {
   ASSERT_EQ(db->newIterator({}, nullptr).code(), StatusCode::kInvalidArgument);
 }
 
+TEST(snapshotFromAnotherDatabaseIsRejected) {
+  TempDirectory first_directory;
+  TempDirectory second_directory;
+  DB::Handle first = openOrCreate(first_directory.path());
+  DB::Handle second = openOrCreate(second_directory.path());
+
+  SnapshotHandle snapshot;
+  ASSERT_OK(first->newSnapshot(&snapshot));
+  std::string value;
+  ASSERT_EQ(second->get(ReadOptions{snapshot}, "key", &value).code(),
+            StatusCode::kInvalidArgument);
+
+  std::unique_ptr<Iterator> iterator;
+  ASSERT_EQ(second->newIterator(ReadOptions{snapshot}, &iterator).code(),
+            StatusCode::kInvalidArgument);
+  ASSERT_TRUE(iterator == nullptr);
+}
+
+TEST(snapshotCanOutliveDatabaseHandle) {
+  TempDirectory directory;
+  SnapshotHandle snapshot;
+  {
+    DB::Handle db = openOrCreate(directory.path());
+    ASSERT_OK(db->newSnapshot(&snapshot));
+  }
+
+  ASSERT_TRUE(snapshot != nullptr);
+  snapshot.reset();
+}
+
 TEST(iteratorHidesLaterWritesToTheSameMutableMemTable) {
   TempDirectory directory;
   DB::Handle db = openOrCreate(directory.path());
@@ -532,10 +583,23 @@ TEST(backgroundCompactionRepeatsAndPreservesSnapshots) {
     waitForObsoleteSSTableCleanup(directory.path(), state);
     ASSERT_TRUE(!std::filesystem::exists(
         sstableFileName(directory.path(), first_output)));
+
+    // 活跃 Snapshot 固定在 value-4；回收必须保留它所需的版本。
+    ASSERT_EQ(countLevel1Versions(directory.path(), state, "key"), 4U);
+
+    const std::uint64_t protected_output = state.level1_tables[0].number;
+    snapshot.reset();
+    for (std::uint64_t index = 9; index < 14; ++index) {
+      ASSERT_OK(db->put({}, "key", "value-" + std::to_string(index)));
+    }
+    state = waitForCompaction(directory.path(), protected_output);
+
+    // Snapshot 释放后，下一次 compaction 只需保留输入中的最新可见版本。
+    ASSERT_EQ(countLevel1Versions(directory.path(), state, "key"), 1U);
   }
 
   DB::Handle db = openWithTinyWriteBuffer(directory.path());
-  ASSERT_EQ(get(*db, "key"), "value-8");
+  ASSERT_EQ(get(*db, "key"), "value-13");
 }
 
 TEST(recoveryRemovesUnreferencedSSTablesAndTemporaryFiles) {

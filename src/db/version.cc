@@ -116,14 +116,17 @@ std::shared_ptr<const Version> Version::withLevel0Compaction(
   assert(!level0_.empty());
   assert(level1_begin <= level1_end);
   assert(level1_end <= level1_.size());
-  assert(output_reader != nullptr);
 
   auto next = std::make_shared<Version>();
-  next->level1_.reserve(level1_.size() - (level1_end - level1_begin) + 1U);
+  const std::size_t output_count = output_reader ? 1U : 0U;
+  next->level1_.reserve(level1_.size() - (level1_end - level1_begin) +
+                        output_count);
   next->level1_.insert(next->level1_.end(), level1_.begin(),
                        level1_.begin() + level1_begin);
-  next->level1_.push_back(
-      Table{std::move(output_meta), std::move(output_reader)});
+  if (output_reader) {
+    next->level1_.push_back(
+        Table{std::move(output_meta), std::move(output_reader)});
+  }
   next->level1_.insert(next->level1_.end(), level1_.begin() + level1_end,
                        level1_.end());
   return next;

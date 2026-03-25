@@ -42,7 +42,8 @@ Status renameTable(const std::filesystem::path& temporary_path,
 }
 
 std::optional<CompactionPlan> pickLevel0Compaction(
-    std::shared_ptr<const Version> version) {
+    std::shared_ptr<const Version> version,
+    SequenceNumber oldest_snapshot) {
   // picker 不创建文件，只在 L0 文件数达到阈值后描述本次归并的输入集合
   if (!version || version->level0().size() < kLevel0CompactionTrigger) {
     return std::nullopt;
@@ -74,7 +75,8 @@ std::optional<CompactionPlan> pickLevel0Compaction(
   const std::size_t end_index =
       static_cast<std::size_t>(end - version->level1().begin());
   // plan 持有 Version，下面记录的下标和对应 reader 在整个构建期间都有效
-  return CompactionPlan{std::move(version), begin_index, end_index};
+  return CompactionPlan{std::move(version), oldest_snapshot, begin_index,
+                        end_index};
 }
 
 Status buildLevel1Table(const CompactionPlan& plan,
@@ -145,8 +147,11 @@ Status buildLevel1Table(const CompactionPlan& plan,
 
   const InternalKeyLess less;
   std::string previous_key;
-  // MergingIterator 保证每轮提供所有输入中最小的 InternalKey；compaction
-  // 只负责把归并结果原样写入新表，不在这里折叠 user key 版本。
+  std::string current_user_key;
+  bool reached_snapshot_boundary = false;
+  bool kept_any = false;
+  // MergingIterator 保证每轮提供所有输入中最小的 InternalKey；回收规则只依赖
+  // 当前 user key 的边界状态，不需要额外的 per-key 容器。
   MergingIterator iterator(std::move(iterators));
   iterator.seekToFirst();
   if (!iterator.status().ok()) return iterator.status();
@@ -159,13 +164,44 @@ Status buildLevel1Table(const CompactionPlan& plan,
       return Status::corruption(
           "compaction inputs contain duplicate internal keys");
     }
-    status = builder->add(key, iterator.value());
-    if (!status.ok()) return status;
+
+    ParsedInternalKey parsed{};
+    if (!parseInternalKey(key, parsed)) {
+      return Status::corruption(
+          "compaction input contains invalid internal key");
+    }
+    if (current_user_key != parsed.user_key) {
+      current_user_key.assign(parsed.user_key.data(), parsed.user_key.size());
+      reached_snapshot_boundary = false;
+    }
+
+    // InternalKey 已按 user key 升序、sequence 降序排列：
+    //   - 边界以上的版本全部保留；
+    //   - 边界以下只需保留第一条可见版本；
+    //   - 当前 L0->L1 输入覆盖全部更低层，因此边界 tombstone 也可丢弃。
+    bool drop = reached_snapshot_boundary;
+    if (!drop && parsed.sequence <= plan.oldest_snapshot) {
+      reached_snapshot_boundary = true;
+      drop = parsed.type == ValueType::kDeletion;
+    }
+
+    if (!drop) {
+      status = builder->add(key, iterator.value());
+      if (!status.ok()) return status;
+      kept_any = true;
+    }
     // iterator.next() 会使当前 Slice 失效，推进前复制一份用于下轮顺序检查。
     previous_key.assign(key.data(), key.size());
 
     iterator.next();
     if (!iterator.status().ok()) return iterator.status();
+  }
+
+  if (!kept_any) {
+    // 不发布空 SSTable；调用方会只删除输入文件集合。
+    builder->abandon();
+    output = CompactionOutput{};
+    return Status::success();
   }
 
   // finish 写完尾部 data block、filter、index 和 footer，同步并关闭临时文件，

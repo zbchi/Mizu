@@ -17,6 +17,7 @@ add_library(lsmtree
   src/db/manifest.cc
   src/db/memtable.cc
   src/db/merging_iterator.cc
+  src/db/snapshot.cc
   src/db/version.cc
   src/db/write_batch.cc
   src/db/write_batch_codec.cc
