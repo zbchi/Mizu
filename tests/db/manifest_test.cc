@@ -50,7 +50,7 @@ TableMeta table(std::uint64_t number, Slice first_user_key,
   return result;
 }
 
-}
+}  // namespace
 
 TEST(manifestRoundTripsCompleteLevel0State) {
   ManifestTempDirectory directory;
@@ -60,10 +60,12 @@ TEST(manifestRoundTripsCompleteLevel0State) {
   ManifestState state;
   state.flushed_sequence = 42;
   state.oldest_wal_number = 9;
-  state.level0_tables.push_back(table(8, std::string("a\0", 2), "z"));
-  state.level0_tables.push_back(table(6, "alpha", "omega"));
-  state.level1_tables.push_back(table(10, "aardvark", "beta"));
-  state.level1_tables.push_back(table(11, "delta", "zulu"));
+  state.levels[kLevel0].push_back(table(8, std::string("a\0", 2), "z"));
+  state.levels[kLevel0].push_back(table(6, "alpha", "omega"));
+  state.levels[kLevel1].push_back(table(10, "aardvark", "beta"));
+  state.levels[kLevel1].push_back(table(11, "delta", "zulu"));
+  state.levels[kLevel2].push_back(table(12, "alpha", "charlie"));
+  state.levels[kLevel2].push_back(table(13, "delta", "zulu"));
   ASSERT_OK(writeManifest(path, temporary, state));
   ASSERT_TRUE(std::filesystem::exists(path));
   ASSERT_TRUE(!std::filesystem::exists(temporary));
@@ -72,15 +74,18 @@ TEST(manifestRoundTripsCompleteLevel0State) {
   ASSERT_OK(readManifest(path, decoded));
   ASSERT_EQ(decoded.flushed_sequence, 42U);
   ASSERT_EQ(decoded.oldest_wal_number, 9U);
-  ASSERT_EQ(decoded.level0_tables.size(), 2U);
-  ASSERT_EQ(decoded.level0_tables[0].number, 8U);
-  ASSERT_EQ(decoded.level0_tables[0].file_size, 800U);
-  ASSERT_EQ(decoded.level0_tables[0].smallest_key,
-            state.level0_tables[0].smallest_key);
-  ASSERT_EQ(decoded.level0_tables[1].number, 6U);
-  ASSERT_EQ(decoded.level1_tables.size(), 2U);
-  ASSERT_EQ(decoded.level1_tables[0].number, 10U);
-  ASSERT_EQ(decoded.level1_tables[1].number, 11U);
+  ASSERT_EQ(decoded.levels[kLevel0].size(), 2U);
+  ASSERT_EQ(decoded.levels[kLevel0][0].number, 8U);
+  ASSERT_EQ(decoded.levels[kLevel0][0].file_size, 800U);
+  ASSERT_EQ(decoded.levels[kLevel0][0].smallest_key,
+            state.levels[kLevel0][0].smallest_key);
+  ASSERT_EQ(decoded.levels[kLevel0][1].number, 6U);
+  ASSERT_EQ(decoded.levels[kLevel1].size(), 2U);
+  ASSERT_EQ(decoded.levels[kLevel1][0].number, 10U);
+  ASSERT_EQ(decoded.levels[kLevel1][1].number, 11U);
+  ASSERT_EQ(decoded.levels[kLevel2].size(), 2U);
+  ASSERT_EQ(decoded.levels[kLevel2][0].number, 12U);
+  ASSERT_EQ(decoded.levels[kLevel2][1].number, 13U);
 }
 
 TEST(manifestReadsLegacyLevel0OnlyState) {
@@ -110,9 +115,43 @@ TEST(manifestReadsLegacyLevel0OnlyState) {
   ManifestState decoded;
   ASSERT_OK(readManifest(path, decoded));
   ASSERT_EQ(decoded.flushed_sequence, 12U);
-  ASSERT_EQ(decoded.level0_tables.size(), 1U);
-  ASSERT_EQ(decoded.level0_tables[0].number, 7U);
-  ASSERT_TRUE(decoded.level1_tables.empty());
+  ASSERT_EQ(decoded.levels[kLevel0].size(), 1U);
+  ASSERT_EQ(decoded.levels[kLevel0][0].number, 7U);
+  ASSERT_TRUE(decoded.levels[kLevel1].empty());
+  ASSERT_TRUE(decoded.levels[kLevel2].empty());
+}
+
+TEST(manifestReadsVersion2Level0AndLevel1State) {
+  ManifestTempDirectory directory;
+  const auto path = manifestFileName(directory.path());
+  const TableMeta level1_table = table(7, "alpha", "omega");
+
+  std::string encoded = "LSMMAN01";
+  putFixed32(encoded, 2);
+  putFixed64(encoded, 12);
+  putFixed64(encoded, 3);
+  putFixed32(encoded, 0);  // L0
+  putFixed32(encoded, 1);  // L1
+  putFixed64(encoded, level1_table.number);
+  putFixed64(encoded, level1_table.file_size);
+  putFixed32(encoded,
+             static_cast<std::uint32_t>(level1_table.smallest_key.size()));
+  encoded.append(level1_table.smallest_key);
+  putFixed32(encoded,
+             static_cast<std::uint32_t>(level1_table.largest_key.size()));
+  encoded.append(level1_table.largest_key);
+  putFixed32(encoded, crc32c(encoded));
+
+  std::ofstream file(path, std::ios::binary);
+  file.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+  file.close();
+
+  ManifestState decoded;
+  ASSERT_OK(readManifest(path, decoded));
+  ASSERT_TRUE(decoded.levels[kLevel0].empty());
+  ASSERT_EQ(decoded.levels[kLevel1].size(), 1U);
+  ASSERT_EQ(decoded.levels[kLevel1][0].number, 7U);
+  ASSERT_TRUE(decoded.levels[kLevel2].empty());
 }
 
 TEST(manifestRejectsInvalidLevel1Layout) {
@@ -122,23 +161,29 @@ TEST(manifestRejectsInvalidLevel1Layout) {
 
   ManifestState state;
   state.oldest_wal_number = 1;
-  state.level1_tables.push_back(table(2, "alpha", "delta"));
-  state.level1_tables.push_back(table(3, "delta", "omega"));
+  state.levels[kLevel1].push_back(table(2, "alpha", "delta"));
+  state.levels[kLevel1].push_back(table(3, "delta", "omega"));
   ASSERT_EQ(writeManifest(path, temporary, state).code(),
             StatusCode::kInvalidArgument);
 
-  state.level1_tables = {table(2, "delta", "omega"),
-                         table(3, "alpha", "beta")};
+  state.levels[kLevel1] = {table(2, "delta", "omega"),
+                           table(3, "alpha", "beta")};
   ASSERT_EQ(writeManifest(path, temporary, state).code(),
             StatusCode::kInvalidArgument);
 
-  state.level0_tables.push_back(table(2, "x", "z"));
-  state.level1_tables = {table(2, "alpha", "beta")};
+  state.levels[kLevel0].push_back(table(2, "x", "z"));
+  state.levels[kLevel1] = {table(2, "alpha", "beta")};
   ASSERT_EQ(writeManifest(path, temporary, state).code(),
             StatusCode::kInvalidArgument);
 
-  state.level0_tables.clear();
-  state.level1_tables = {table(2, "", ""), table(3, "", "alpha")};
+  state.levels[kLevel0].clear();
+  state.levels[kLevel1] = {table(2, "", ""), table(3, "", "alpha")};
+  ASSERT_EQ(writeManifest(path, temporary, state).code(),
+            StatusCode::kInvalidArgument);
+
+  state.levels[kLevel1].clear();
+  state.levels[kLevel2] = {table(4, "hotel", "zulu"),
+                           table(5, "alpha", "india")};
   ASSERT_EQ(writeManifest(path, temporary, state).code(),
             StatusCode::kInvalidArgument);
 }
@@ -192,4 +237,4 @@ TEST(numberedFileNamesRoundTrip) {
       !parseNumberedFileName(directory.path() / "000000.log", number, type));
 }
 
-}
+}  // namespace lsmtree

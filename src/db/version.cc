@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <system_error>
 #include <utility>
 
@@ -20,8 +21,8 @@ Slice userKey(Slice internal_key) {
   return parsed.user_key;
 }
 
-Status openTable(const std::filesystem::path& directory,
-                 const TableMeta& meta, Version::Table& table) {
+Status openTable(const std::filesystem::path& directory, const TableMeta& meta,
+                 Version::Table& table) {
   const std::filesystem::path path = sstableFileName(directory, meta.number);
   std::error_code error;
   const bool exists = std::filesystem::exists(path, error);
@@ -58,17 +59,18 @@ Status openLevel(const std::filesystem::path& directory,
   return Status::success();
 }
 
-}
+}  // namespace
 
 Status Version::open(const std::filesystem::path& directory,
                      const ManifestState& manifest,
                      std::shared_ptr<const Version>& version) {
   // opened 保持私有 任一文件失败都不会修改调用方的当前 Version
   auto opened = std::make_shared<Version>();
-  Status status = openLevel(directory, manifest.level0_tables, opened->level0_);
-  if (!status.ok()) return status;
-  status = openLevel(directory, manifest.level1_tables, opened->level1_);
-  if (!status.ok()) return status;
+  for (std::size_t level = 0; level < kNumLevels; ++level) {
+    Status status =
+        openLevel(directory, manifest.levels[level], opened->levels_[level]);
+    if (!status.ok()) return status;
+  }
   version = std::move(opened);
   return Status::success();
 }
@@ -77,22 +79,28 @@ Status Version::get(const ReadOptions& options, Slice user_key,
                     SequenceNumber visible_sequence, LookupResult& result,
                     std::string& value) const {
   // L0 文件范围可以重叠 必须按新文件到旧文件逐个查找
-  for (const Table& table : level0_) {
-    Status status = table.reader->get(options, user_key, visible_sequence,
-                                      result, value);
+  for (const Table& table : levels_[kLevel0]) {
+    Status status =
+        table.reader->get(options, user_key, visible_sequence, result, value);
     if (!status.ok() || result != LookupResult::kAbsent) return status;
   }
 
-  // L1 按 user key 范围有序且不重叠 第一个末端不小于 key 的文件是唯一候选
-  const auto candidate = std::lower_bound(
-      level1_.begin(), level1_.end(), user_key,
-      [](const Table& table, Slice key) {
-        return userKey(table.meta.largest_key) < key;
-      });
-  if (candidate != level1_.end() &&
-      userKey(candidate->meta.smallest_key) <= user_key) {
-    return candidate->reader->get(options, user_key, visible_sequence, result,
-                                  value);
+  // 非 L0 层按 user key 范围有序且不重叠，每层至多有一个候选。候选
+  // 对旧 Snapshot 返回 absent 时仍要继续向下查找。
+  for (std::size_t level = kLevel1; level < kNumLevels; ++level) {
+    const auto& tables = levels_[level];
+    const auto candidate =
+        std::lower_bound(tables.begin(), tables.end(), user_key,
+                         [](const Table& table, Slice key) {
+                           return userKey(table.meta.largest_key) < key;
+                         });
+    if (candidate == tables.end() ||
+        userKey(candidate->meta.smallest_key) > user_key) {
+      continue;
+    }
+    Status status = candidate->reader->get(options, user_key, visible_sequence,
+                                           result, value);
+    if (!status.ok() || result != LookupResult::kAbsent) return status;
   }
 
   result = LookupResult::kAbsent;
@@ -103,33 +111,39 @@ std::shared_ptr<const Version> Version::withLevel0Table(
     TableMeta meta, std::shared_ptr<const SSTableReader> reader) const {
   // 复制元数据和 shared_ptr 不复制 SSTable 内容
   auto next = std::make_shared<Version>();
-  next->level0_.reserve(level0_.size() + 1U);
-  next->level0_.push_back(Table{std::move(meta), std::move(reader)});
-  next->level0_.insert(next->level0_.end(), level0_.begin(), level0_.end());
-  next->level1_ = level1_;
+  next->levels_ = levels_;
+  auto& level0 = next->levels_[kLevel0];
+  level0.insert(level0.begin(), Table{std::move(meta), std::move(reader)});
   return next;
 }
 
-std::shared_ptr<const Version> Version::withLevel0Compaction(
-    std::size_t level1_begin, std::size_t level1_end, TableMeta output_meta,
-    std::shared_ptr<const SSTableReader> output_reader) const {
-  assert(!level0_.empty());
-  assert(level1_begin <= level1_end);
-  assert(level1_end <= level1_.size());
+std::shared_ptr<const Version> Version::withCompaction(
+    std::size_t input_level, IndexRange inputs, IndexRange overlaps,
+    std::vector<Table> outputs) const {
+  assert(input_level + 1U < kNumLevels);
+  assert(inputs.begin < inputs.end);
+  assert(inputs.end <= levels_[input_level].size());
+  assert(overlaps.begin <= overlaps.end);
+  assert(overlaps.end <= levels_[input_level + 1U].size());
 
   auto next = std::make_shared<Version>();
-  const std::size_t output_count = output_reader ? 1U : 0U;
-  next->level1_.reserve(level1_.size() - (level1_end - level1_begin) +
-                        output_count);
-  next->level1_.insert(next->level1_.end(), level1_.begin(),
-                       level1_.begin() + level1_begin);
-  if (output_reader) {
-    next->level1_.push_back(
-        Table{std::move(output_meta), std::move(output_reader)});
-  }
-  next->level1_.insert(next->level1_.end(), level1_.begin() + level1_end,
-                       level1_.end());
+  next->levels_ = levels_;
+
+  auto& source = next->levels_[input_level];
+  source.erase(source.begin() + inputs.begin, source.begin() + inputs.end);
+
+  auto& target = next->levels_[input_level + 1U];
+  target.erase(target.begin() + overlaps.begin, target.begin() + overlaps.end);
+  target.insert(target.begin() + overlaps.begin,
+                std::make_move_iterator(outputs.begin()),
+                std::make_move_iterator(outputs.end()));
   return next;
 }
 
+const std::vector<Version::Table>& Version::level(
+    std::size_t level) const noexcept {
+  assert(level < kNumLevels);
+  return levels_[level];
 }
+
+}  // namespace lsmtree

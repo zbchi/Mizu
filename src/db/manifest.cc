@@ -4,8 +4,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <cerrno>
 #include <cassert>
+#include <cerrno>
 #include <limits>
 #include <set>
 #include <string>
@@ -20,13 +20,14 @@ namespace {
 
 constexpr char kManifestMagic[] = "LSMMAN01";
 constexpr std::size_t kManifestMagicSize = sizeof(kManifestMagic) - 1U;
-constexpr std::uint32_t kManifestVersion = 2;
-constexpr std::uint32_t kLegacyManifestVersion = 1;
+constexpr std::uint32_t kManifestVersion = 3;
+constexpr std::uint32_t kLevel1ManifestVersion = 2;
+constexpr std::uint32_t kLevel0ManifestVersion = 1;
 constexpr std::size_t kManifestChecksumSize = sizeof(std::uint32_t);
 constexpr std::size_t kInternalKeyTagSize = sizeof(std::uint64_t);
-constexpr std::size_t kMinimumTableEncodingSize =
-    sizeof(std::uint64_t) * 2U + sizeof(std::uint32_t) * 2U +
-    kInternalKeyTagSize * 2U;
+constexpr std::size_t kMinimumTableEncodingSize = sizeof(std::uint64_t) * 2U +
+                                                  sizeof(std::uint32_t) * 2U +
+                                                  kInternalKeyTagSize * 2U;
 constexpr std::size_t kMaximumManifestSize = 64U * 1024U * 1024U;
 
 // 将 Manifest 文件操作错误统一转换为 Status
@@ -69,34 +70,37 @@ const char* validateState(const ManifestState& state) {
   if (state.oldest_wal_number == 0) {
     return "manifest WAL number must be positive";
   }
-  if (state.level0_tables.size() > std::numeric_limits<std::uint32_t>::max()) {
-    return "manifest has too many L0 tables";
-  }
-  if (state.level1_tables.size() > std::numeric_limits<std::uint32_t>::max()) {
-    return "manifest has too many L1 tables";
+  for (std::size_t level = 0; level < kNumLevels; ++level) {
+    if (state.levels[level].size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+      return "manifest has too many tables in a level";
+    }
   }
 
   std::set<std::uint64_t> numbers;
-  for (const TableMeta& table : state.level0_tables) {
+  for (const TableMeta& table : state.levels[kLevel0]) {
     if (const char* error = validateTable(table, numbers)) return error;
   }
 
-  Slice previous_largest;
-  bool has_previous = false;
-  // L1 以 user key 划分文件 同一个 user key 不允许跨越文件边界
-  for (const TableMeta& table : state.level1_tables) {
-    if (const char* error = validateTable(table, numbers)) return error;
+  // 非 L0 层按 user key 划分文件，同一个 user key 不允许跨越文件边界。
+  for (std::size_t level = kLevel1; level < kNumLevels; ++level) {
+    Slice previous_largest;
+    bool has_previous = false;
+    for (const TableMeta& table : state.levels[level]) {
+      if (const char* error = validateTable(table, numbers)) return error;
 
-    ParsedInternalKey smallest{};
-    ParsedInternalKey largest{};
-    const bool parsed_smallest = parseInternalKey(table.smallest_key, smallest);
-    const bool parsed_largest = parseInternalKey(table.largest_key, largest);
-    assert(parsed_smallest && parsed_largest);
-    if (has_previous && previous_largest >= smallest.user_key) {
-      return "manifest L1 table ranges overlap or are out of order";
+      ParsedInternalKey smallest{};
+      ParsedInternalKey largest{};
+      const bool parsed_smallest =
+          parseInternalKey(table.smallest_key, smallest);
+      const bool parsed_largest = parseInternalKey(table.largest_key, largest);
+      assert(parsed_smallest && parsed_largest);
+      if (has_previous && previous_largest >= smallest.user_key) {
+        return "manifest non-L0 table ranges overlap or are out of order";
+      }
+      previous_largest = largest.user_key;
+      has_previous = true;
     }
-    previous_largest = largest.user_key;
-    has_previous = true;
   }
   return nullptr;
 }
@@ -160,10 +164,10 @@ Status encodeManifest(const ManifestState& state, std::string& output) {
   putFixed32(encoded, kManifestVersion);
   putFixed64(encoded, state.flushed_sequence);
   putFixed64(encoded, state.oldest_wal_number);
-  Status status = appendTables(state.level0_tables, encoded);
-  if (!status.ok()) return status;
-  status = appendTables(state.level1_tables, encoded);
-  if (!status.ok()) return status;
+  for (const auto& level : state.levels) {
+    Status status = appendTables(level, encoded);
+    if (!status.ok()) return status;
+  }
 
   putFixed32(encoded, crc32c(encoded));
   output = std::move(encoded);
@@ -198,21 +202,25 @@ Status decodeManifest(Slice input, ManifestState& output) {
 
   std::uint32_t version = 0;
   ManifestState decoded;
-  if (!getFixed32(cursor, version) ||
-      (version != kLegacyManifestVersion && version != kManifestVersion)) {
+  if (!getFixed32(cursor, version) || version < kLevel0ManifestVersion ||
+      version > kManifestVersion) {
     return Status::corruption("unsupported manifest version");
   }
   if (!getFixed64(cursor, decoded.flushed_sequence) ||
       !getFixed64(cursor, decoded.oldest_wal_number)) {
     return Status::corruption("truncated manifest header");
   }
-  if (!takeTables(cursor, decoded.level0_tables)) {
+  if (!takeTables(cursor, decoded.levels[kLevel0])) {
     return Status::corruption("invalid manifest L0 table list");
   }
-  // v1 文件到 L0 列表结束 v2 在其后追加 L1 列表
-  if (version == kManifestVersion &&
-      !takeTables(cursor, decoded.level1_tables)) {
+  // v1 只有 L0，v2 追加 L1，v3 再追加 L2。
+  if (version >= kLevel1ManifestVersion &&
+      !takeTables(cursor, decoded.levels[kLevel1])) {
     return Status::corruption("invalid manifest L1 table list");
+  }
+  if (version >= kManifestVersion &&
+      !takeTables(cursor, decoded.levels[kLevel2])) {
+    return Status::corruption("invalid manifest L2 table list");
   }
   if (!cursor.empty()) {
     return Status::corruption("manifest has trailing bytes");
@@ -286,7 +294,7 @@ Status readFile(const std::filesystem::path& path, std::string& output) {
   return Status::success();
 }
 
-}
+}  // namespace
 
 // 先读完整文件再提交解码结果
 Status readManifest(const std::filesystem::path& path, ManifestState& state) {
@@ -326,4 +334,4 @@ Status writeManifest(const std::filesystem::path& path,
   return Status::success();
 }
 
-}
+}  // namespace lsmtree

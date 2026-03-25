@@ -27,8 +27,8 @@ Status SSTableBuilder::open(const std::filesystem::path& temporary_path,
     return Status::invalidArgument("block restart interval must be positive");
   }
 
-  const int fd = ::open(temporary_path.c_str(),
-                        O_WRONLY | O_CREAT | O_EXCL, 0644);
+  const int fd =
+      ::open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
   if (fd < 0) {
     const int error_number = errno;
     if (error_number == EEXIST) {
@@ -79,6 +79,10 @@ Status SSTableBuilder::add(Slice internal_key, Slice value) {
     return flushDataBlock();
   }
   return Status::success();
+}
+
+std::uint64_t SSTableBuilder::estimatedFileSize() const noexcept {
+  return file_offset_ + data_block_.currentSizeEstimate();
 }
 
 Status SSTableBuilder::finish(SSTableMeta& meta) {
@@ -194,4 +198,4 @@ Status SSTableBuilder::latchIOError(const char* operation, int error_number) {
   return error_;
 }
 
-}
+}  // namespace lsmtree

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include "db/internal_key.h"
+#include "db/level.h"
 #include "lsmtree/db.h"
 
 namespace lsmtree {
@@ -21,8 +23,8 @@ struct TableMeta {
 struct ManifestState {
   SequenceNumber flushed_sequence = 0;
   std::uint64_t oldest_wal_number = 0;
-  std::vector<TableMeta> level0_tables;  // 新文件在前
-  std::vector<TableMeta> level1_tables;  // user key 范围有序且不重叠
+  // L0 新文件在前且允许重叠；L1/L2 按 user key 有序且不重叠。
+  std::array<std::vector<TableMeta>, kNumLevels> levels;
 };
 
 // 读取并完整校验一份已经发布的 Manifest
@@ -33,4 +35,4 @@ Status writeManifest(const std::filesystem::path& path,
                      const std::filesystem::path& temporary_path,
                      const ManifestState& state);
 
-}
+}  // namespace lsmtree

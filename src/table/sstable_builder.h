@@ -40,6 +40,10 @@ class SSTableBuilder final {
   // 在可写状态加入严格递增的 InternalKey
   Status add(Slice internal_key, Slice value);
 
+  // 已落盘 data block 加当前 data block 的近似大小；用于 compaction
+  // 决定何时在下一个 user-key 边界切分输出。
+  std::uint64_t estimatedFileSize() const noexcept;
+
   // 在可写状态写出索引和 footer 并同步关闭文件
   Status finish(SSTableMeta& meta);
 
@@ -85,4 +89,4 @@ class SSTableBuilder final {
   std::string last_key_;
 };
 
-}
+}  // namespace lsmtree

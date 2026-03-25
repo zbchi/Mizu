@@ -1,6 +1,7 @@
 #include "db/db_impl.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <system_error>
@@ -43,7 +44,7 @@ class SnapshotImpl final : public Snapshot {
   std::shared_ptr<SnapshotTracker> tracker_;
 };
 
-}
+}  // namespace
 
 DBImpl::~DBImpl() {
   {
@@ -96,8 +97,7 @@ Status DBImpl::open(const DBOptions& options,
   if (!status.ok()) return status;
 
   try {
-    impl->background_thread_ =
-        std::thread(&DBImpl::backgroundLoop, impl.get());
+    impl->background_thread_ = std::thread(&DBImpl::backgroundLoop, impl.get());
   } catch (const std::system_error& error) {
     return Status::ioError("start background flush thread: " +
                            std::string(error.what()));
@@ -140,8 +140,7 @@ Status DBImpl::recoverDatabase(const DirectoryContents& files) {
   // 多个 WAL 可能共同承载尚未 flush 的连续数据。恢复把它们合并进一个
   // MemTable 后，Manifest 仍引用原来的 replay 下界；在下一次 flush 提交前
   // 只能删除低于该边界的 WAL，否则再次崩溃会缺失恢复输入。
-  removeObsoleteWalFilesBestEffort(directory_,
-                                   manifest_.oldest_wal_number);
+  removeObsoleteWalFilesBestEffort(directory_, manifest_.oldest_wal_number);
   removeObsoleteSSTableFilesBestEffort(directory_, manifest_);
   return Status::success();
 }
@@ -245,8 +244,7 @@ Status DBImpl::recoverWalFile(const std::filesystem::path& path) {
 }
 
 // MemTable 达到上限时等待前一次 flush 或快速切换到新 WAL
-Status DBImpl::makeRoomForWrite(
-    std::unique_lock<std::shared_mutex>& lock) {
+Status DBImpl::makeRoomForWrite(std::unique_lock<std::shared_mutex>& lock) {
   while (true) {
     if (!background_error_.ok()) return background_error_;
     if (memtable_->empty() ||
@@ -275,8 +273,8 @@ Status DBImpl::rotateMemTable() {
   if (!status.ok()) return status;
 
   next_file_number_ += 2U;
-  immutable_.emplace(ImmutableMemTable{std::move(memtable_), table_number,
-                                       last_sequence_});
+  immutable_.emplace(
+      ImmutableMemTable{std::move(memtable_), table_number, last_sequence_});
   memtable_ = std::move(new_memtable);
   wal_ = std::move(new_wal);
   wal_number_ = new_wal_number;
@@ -284,26 +282,25 @@ Status DBImpl::rotateMemTable() {
   return Status::success();
 }
 
-bool DBImpl::needsLevel0Compaction() const noexcept {
-  return current_version_->level0().size() >= kLevel0CompactionTrigger;
+bool DBImpl::hasCompactionWork() const noexcept {
+  return current_version_ && needsCompaction(*current_version_);
 }
 
-// 唯一后台线程串行执行 L0 压缩和 immutable MemTable flush
+// 唯一后台线程串行执行相邻层压缩和 immutable MemTable flush
 void DBImpl::backgroundLoop() {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   while (true) {
     background_cv_.wait(lock, [this] {
-      return shutting_down_ || immutable_.has_value() ||
-             needsLevel0Compaction();
+      return shutting_down_ || immutable_.has_value() || hasCompactionWork();
     });
     if (shutting_down_ && !immutable_) return;
 
-    // 达到 L0 硬阈值后先压缩，防止持续 flush 让 L0 无界增长；关闭时只
-    // 完成已经存在的 immutable flush，不额外启动 compaction。
-    const bool compact = !shutting_down_ && needsLevel0Compaction();
+    // 达到层级阈值后先压缩，限制 L0 文件数和 L1 字节数；关闭时只完成
+    // 已经存在的 immutable flush，不额外启动 compaction。
+    const bool should_compact = !shutting_down_ && hasCompactionWork();
 
     lock.unlock();
-    const Status status = compact ? compactLevel0() : flushImmutableMemTable();
+    const Status status = should_compact ? compact() : flushImmutableMemTable();
     lock.lock();
 
     if (!status.ok()) {
@@ -347,11 +344,11 @@ Status DBImpl::flushImmutableMemTable() {
     candidate = manifest_;
     candidate.flushed_sequence = flushed_sequence;
     candidate.oldest_wal_number = wal_number_;
-    candidate.level0_tables.insert(candidate.level0_tables.begin(),
-                                   descriptor);
+    auto& level0 = candidate.levels[kLevel0];
+    level0.insert(level0.begin(), descriptor);
     live_wal_number = wal_number_;
-    candidate_version = current_version_->withLevel0Table(
-        descriptor, std::move(table_reader));
+    candidate_version =
+        current_version_->withLevel0Table(descriptor, std::move(table_reader));
   }
 
   status = writeManifest(manifestFileName(directory_),
@@ -375,22 +372,27 @@ Status DBImpl::flushImmutableMemTable() {
 }
 
 // 输出文件和候选状态全部准备完成后，先提交 Manifest，再切换内存 Version
-Status DBImpl::compactLevel0() {
+Status DBImpl::compact() {
   std::optional<CompactionPlan> plan;
-  std::uint64_t output_number = 0;
   {
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    plan = pickLevel0Compaction(current_version_,
-                                snapshots_->oldest(last_sequence_));
+    plan = pickCompaction(current_version_, snapshots_->oldest(last_sequence_));
     if (!plan) return Status::success();
+  }
+
+  const FileNumberAllocator allocate_file_number =
+      [this](std::uint64_t& number) -> Status {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     if (next_file_number_ == std::numeric_limits<std::uint64_t>::max()) {
       return Status::ioError("database file number space is exhausted");
     }
-    output_number = next_file_number_++;
-  }
+    number = next_file_number_++;
+    return Status::success();
+  };
 
-  CompactionOutput output;
-  Status status = buildLevel1Table(*plan, output_number, directory_, output);
+  std::vector<CompactionOutput> outputs;
+  Status status =
+      buildCompactionTables(*plan, directory_, allocate_file_number, outputs);
   if (!status.ok()) return status;
 
   ManifestState candidate;
@@ -399,28 +401,43 @@ Status DBImpl::compactLevel0() {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     // 磁盘 Version 只由这一条后台线程修改，构建期间输入不会被替换
     assert(current_version_ == plan->input_version);
-    assert(plan->level1_end <= manifest_.level1_tables.size());
+    assert(plan->input_level + 1U < kNumLevels);
 
     candidate = manifest_;
-    candidate.level0_tables.clear();
-    const auto begin = candidate.level1_tables.begin();
-    candidate.level1_tables.erase(begin + plan->level1_begin,
-                                  begin + plan->level1_end);
-    if (output.reader) {
-      candidate.level1_tables.insert(
-          candidate.level1_tables.begin() + plan->level1_begin, output.meta);
+    auto& source = candidate.levels[plan->input_level];
+    auto& target = candidate.levels[plan->outputLevel()];
+    assert(plan->inputs.end <= source.size());
+    assert(plan->overlaps.end <= target.size());
+    source.erase(source.begin() + plan->inputs.begin,
+                 source.begin() + plan->inputs.end);
+    target.erase(target.begin() + plan->overlaps.begin,
+                 target.begin() + plan->overlaps.end);
+
+    std::vector<Version::Table> output_tables;
+    output_tables.reserve(outputs.size());
+    std::vector<TableMeta> output_metadata;
+    output_metadata.reserve(outputs.size());
+    for (const CompactionOutput& output : outputs) {
+      output_metadata.push_back(output.meta);
+      output_tables.push_back({output.meta, output.reader});
     }
-    candidate_version = plan->input_version->withLevel0Compaction(
-        plan->level1_begin, plan->level1_end, output.meta, output.reader);
+    target.insert(target.begin() + plan->overlaps.begin,
+                  std::make_move_iterator(output_metadata.begin()),
+                  std::make_move_iterator(output_metadata.end()));
+    candidate_version = plan->input_version->withCompaction(
+        plan->input_level, plan->inputs, plan->overlaps,
+        std::move(output_tables));
   }
 
   status = writeManifest(manifestFileName(directory_),
                          manifestTemporaryFileName(directory_), candidate);
   if (!status.ok()) {
-    // Manifest 仍指向旧 Version，新输出只是未发布文件
+    // Manifest 仍指向旧 Version，新输出都只是未发布文件。
     candidate_version.reset();
-    output.reader.reset();
-    removeFileBestEffort(sstableFileName(directory_, output_number));
+    for (CompactionOutput& output : outputs) {
+      output.reader.reset();
+      removeFileBestEffort(sstableFileName(directory_, output.meta.number));
+    }
     return status;
   }
 
@@ -535,19 +552,21 @@ Status DBImpl::newIterator(const ReadOptions& options,
   }
 
   std::vector<std::unique_ptr<InternalIterator>> children;
-  children.reserve(1U + (immutable_memtable ? 1U : 0U) +
-                   version->level0().size() + version->level1().size());
+  std::size_t table_count = 0;
+  for (std::size_t level = 0; level < kNumLevels; ++level) {
+    table_count += version->level(level).size();
+  }
+  children.reserve(1U + (immutable_memtable ? 1U : 0U) + table_count);
   children.push_back(
       std::make_unique<MemTable::Iterator>(mutable_memtable->newIterator()));
   if (immutable_memtable) {
     children.push_back(std::make_unique<MemTable::Iterator>(
         immutable_memtable->newIterator()));
   }
-  for (const Version::Table& table : version->level0()) {
-    children.push_back(table.reader->newIterator(options));
-  }
-  for (const Version::Table& table : version->level1()) {
-    children.push_back(table.reader->newIterator(options));
+  for (std::size_t level = 0; level < kNumLevels; ++level) {
+    for (const Version::Table& table : version->level(level)) {
+      children.push_back(table.reader->newIterator(options));
+    }
   }
 
   auto merged = std::make_unique<MergingIterator>(std::move(children));
@@ -557,4 +576,4 @@ Status DBImpl::newIterator(const ReadOptions& options,
   return Status::success();
 }
 
-}
+}  // namespace lsmtree

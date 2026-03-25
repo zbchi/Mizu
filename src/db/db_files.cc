@@ -21,7 +21,7 @@ Status posixError(const char* operation, const std::filesystem::path& path) {
                          std::strerror(errno));
 }
 
-}
+}  // namespace
 
 FileLock::FileLock(int fd) noexcept : fd_(fd) {}
 
@@ -47,8 +47,7 @@ void FileLock::reset() noexcept {
   fd_ = -1;
 }
 
-Status filesystemError(const char* operation,
-                       const std::filesystem::path& path,
+Status filesystemError(const char* operation, const std::filesystem::path& path,
                        const std::error_code& error) {
   return Status::ioError(std::string(operation) + " " + path.string() + ": " +
                          error.message());
@@ -137,9 +136,8 @@ void removeFileBestEffort(const std::filesystem::path& path) {
   std::filesystem::remove(path, ignored);
 }
 
-void removeObsoleteWalFilesBestEffort(
-    const std::filesystem::path& directory,
-    std::uint64_t live_wal_number) {
+void removeObsoleteWalFilesBestEffort(const std::filesystem::path& directory,
+                                      std::uint64_t live_wal_number) {
   std::error_code error;
   std::filesystem::directory_iterator iterator(directory, error);
   if (error) return;
@@ -157,14 +155,10 @@ void removeObsoleteWalFilesBestEffort(
 }
 
 void removeObsoleteSSTableFilesBestEffort(
-    const std::filesystem::path& directory,
-    const ManifestState& manifest) {
+    const std::filesystem::path& directory, const ManifestState& manifest) {
   std::set<std::uint64_t> live;
-  for (const TableMeta& table : manifest.level0_tables) {
-    live.insert(table.number);
-  }
-  for (const TableMeta& table : manifest.level1_tables) {
-    live.insert(table.number);
+  for (const auto& level : manifest.levels) {
+    for (const TableMeta& table : level) live.insert(table.number);
   }
 
   std::error_code error;
@@ -185,4 +179,4 @@ void removeObsoleteSSTableFilesBestEffort(
   }
 }
 
-}
+}  // namespace lsmtree

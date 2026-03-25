@@ -41,7 +41,7 @@ void touch(const std::filesystem::path& path) {
   ASSERT_TRUE(file.is_open());
 }
 
-}
+}  // namespace
 
 TEST(databaseDirectoryScanAndWalCleanupUseNumberedFilesOnly) {
   DatabaseFilesTempDirectory directory;
@@ -66,7 +66,7 @@ TEST(databaseDirectoryScanAndWalCleanupUseNumberedFilesOnly) {
 
   touch(sstableFileName(directory.path(), 13));
   ManifestState manifest;
-  manifest.level0_tables.push_back(TableMeta{12, 1, "", ""});
+  manifest.levels[kLevel0].push_back(TableMeta{12, 1, "", ""});
   removeObsoleteSSTableFilesBestEffort(directory.path(), manifest);
   ASSERT_TRUE(std::filesystem::exists(sstableFileName(directory.path(), 12)));
   ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 13)));
@@ -76,4 +76,4 @@ TEST(databaseDirectoryScanAndWalCleanupUseNumberedFilesOnly) {
   ASSERT_TRUE(std::filesystem::exists(directory.path() / "unrelated"));
 }
 
-}
+}  // namespace lsmtree

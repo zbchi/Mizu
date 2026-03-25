@@ -38,8 +38,8 @@ class VersionTempDirectory {
 };
 
 TableMeta buildTable(const VersionTempDirectory& directory,
-                     std::uint64_t number, Slice first_key,
-                     Slice first_value, Slice last_key, Slice last_value) {
+                     std::uint64_t number, Slice first_key, Slice first_value,
+                     Slice last_key, Slice last_value) {
   std::unique_ptr<SSTableBuilder> builder;
   ASSERT_OK(SSTableBuilder::open(sstableFileName(directory.path(), number), {},
                                  builder));
@@ -52,8 +52,7 @@ TableMeta buildTable(const VersionTempDirectory& directory,
 
   SSTableMeta meta;
   ASSERT_OK(builder->finish(meta));
-  return TableMeta{number, meta.file_size, meta.smallest_key,
-                   meta.largest_key};
+  return TableMeta{number, meta.file_size, meta.smallest_key, meta.largest_key};
 }
 
 std::string get(const Version& version, Slice key) {
@@ -64,17 +63,17 @@ std::string get(const Version& version, Slice key) {
   return value;
 }
 
-}
+}  // namespace
 
 TEST(versionReadsLevel0BeforeSingleCandidateInLevel1) {
   VersionTempDirectory directory;
   ManifestState manifest;
   manifest.oldest_wal_number = 1;
-  manifest.level0_tables.push_back(
+  manifest.levels[kLevel0].push_back(
       buildTable(directory, 4, "beta", "l0", "beta", "l0"));
-  manifest.level1_tables.push_back(
+  manifest.levels[kLevel1].push_back(
       buildTable(directory, 2, "alpha", "a", "charlie", "l1"));
-  manifest.level1_tables.push_back(
+  manifest.levels[kLevel1].push_back(
       buildTable(directory, 3, "delta", "d", "omega", "o"));
 
   std::shared_ptr<const Version> version;
@@ -90,4 +89,27 @@ TEST(versionReadsLevel0BeforeSingleCandidateInLevel1) {
   ASSERT_EQ(value, "preserved");
 }
 
+TEST(versionContinuesToLevel2WhenLevel1HasNoSnapshotVisibleEntry) {
+  VersionTempDirectory directory;
+  ManifestState manifest;
+  manifest.oldest_wal_number = 1;
+  manifest.levels[kLevel1].push_back(
+      buildTable(directory, 10, "key", "new", "key", "new"));
+  manifest.levels[kLevel2].push_back(
+      buildTable(directory, 3, "key", "old", "key", "old"));
+
+  std::shared_ptr<const Version> version;
+  ASSERT_OK(Version::open(directory.path(), manifest, version));
+
+  LookupResult result = LookupResult::kAbsent;
+  std::string value;
+  ASSERT_OK(version->get({}, "key", 5, result, value));
+  ASSERT_EQ(result, LookupResult::kValue);
+  ASSERT_EQ(value, "old");
+
+  ASSERT_OK(version->get({}, "key", 10, result, value));
+  ASSERT_EQ(result, LookupResult::kValue);
+  ASSERT_EQ(value, "new");
 }
+
+}  // namespace lsmtree

@@ -42,18 +42,18 @@ class CompactionTempDirectory {
     std::filesystem::remove_all(path_, error);
   }
 
-  const std::filesystem::path &path() const { return path_; }
+  const std::filesystem::path& path() const { return path_; }
 
  private:
   std::filesystem::path path_;
 };
 
-TableMeta buildTable(const CompactionTempDirectory &directory,
-                     std::uint64_t number, const std::vector<Entry> &entries) {
+TableMeta buildTable(const CompactionTempDirectory& directory,
+                     std::uint64_t number, const std::vector<Entry>& entries) {
   std::unique_ptr<SSTableBuilder> builder;
   ASSERT_OK(SSTableBuilder::open(sstableFileName(directory.path(), number), {},
                                  builder));
-  for (const Entry &entry : entries) {
+  for (const Entry& entry : entries) {
     ASSERT_OK(builder->add(
         encodeInternalKey(entry.user_key, entry.sequence, entry.type),
         entry.value));
@@ -66,17 +66,24 @@ TableMeta buildTable(const CompactionTempDirectory &directory,
 }
 
 std::shared_ptr<const Version> openVersion(
-    const CompactionTempDirectory &directory,
-    const std::vector<std::vector<Entry>> &level0_entries,
-    const std::vector<std::vector<Entry>> &level1_entries = {}) {
+    const CompactionTempDirectory& directory,
+    const std::vector<std::vector<Entry>>& level0_entries,
+    const std::vector<std::vector<Entry>>& level1_entries = {},
+    const std::vector<std::vector<Entry>>& level2_entries = {}) {
   ManifestState manifest;
   manifest.oldest_wal_number = 1;
   std::uint64_t number = 1;
-  for (const auto &entries : level0_entries) {
-    manifest.level0_tables.push_back(buildTable(directory, number++, entries));
+  for (const auto& entries : level0_entries) {
+    manifest.levels[kLevel0].push_back(
+        buildTable(directory, number++, entries));
   }
-  for (const auto &entries : level1_entries) {
-    manifest.level1_tables.push_back(buildTable(directory, number++, entries));
+  for (const auto& entries : level1_entries) {
+    manifest.levels[kLevel1].push_back(
+        buildTable(directory, number++, entries));
+  }
+  for (const auto& entries : level2_entries) {
+    manifest.levels[kLevel2].push_back(
+        buildTable(directory, number++, entries));
   }
 
   std::shared_ptr<const Version> version;
@@ -89,7 +96,7 @@ struct OwnedEntry {
   std::string value;
 };
 
-std::vector<OwnedEntry> readAll(const SSTableReader &reader) {
+std::vector<OwnedEntry> readAll(const SSTableReader& reader) {
   std::vector<OwnedEntry> entries;
   auto iterator = reader.newIterator({});
   iterator->seekToFirst();
@@ -102,6 +109,31 @@ std::vector<OwnedEntry> readAll(const SSTableReader &reader) {
   return entries;
 }
 
+Status buildTables(const CompactionPlan& plan, std::uint64_t first_number,
+                   const std::filesystem::path& directory,
+                   std::vector<CompactionOutput>& outputs,
+                   CompactionOptions options = {}) {
+  std::uint64_t next_number = first_number;
+  return buildCompactionTables(
+      plan, directory,
+      [&next_number](std::uint64_t& number) {
+        number = next_number++;
+        return Status::success();
+      },
+      outputs, options);
+}
+
+std::shared_ptr<const Version> install(
+    const CompactionPlan& plan, const std::vector<CompactionOutput>& outputs) {
+  std::vector<Version::Table> tables;
+  tables.reserve(outputs.size());
+  for (const CompactionOutput& output : outputs) {
+    tables.push_back({output.meta, output.reader});
+  }
+  return plan.input_version->withCompaction(plan.input_level, plan.inputs,
+                                            plan.overlaps, std::move(tables));
+}
+
 }  // namespace
 
 TEST(level0CompactionRequiresFourTablesAndSelectsOverlappingLevel1) {
@@ -109,8 +141,7 @@ TEST(level0CompactionRequiresFourTablesAndSelectsOverlappingLevel1) {
   auto three = openVersion(directory, {{{"bravo", 9, ValueType::kValue, "b"}},
                                        {{"delta", 8, ValueType::kValue, "d"}},
                                        {{"hotel", 7, ValueType::kValue, "h"}}});
-  ASSERT_TRUE(
-      !pickLevel0Compaction(std::move(three), 0).has_value());
+  ASSERT_TRUE(!pickCompaction(std::move(three), 0).has_value());
 
   CompactionTempDirectory ready_directory;
   auto ready = openVersion(ready_directory,
@@ -125,11 +156,37 @@ TEST(level0CompactionRequiresFourTablesAndSelectsOverlappingLevel1) {
                              {"india", 1, ValueType::kValue, "i"}},
                             {{"juliet", 1, ValueType::kValue, "j"}}});
 
-  const auto plan = pickLevel0Compaction(ready, 0);
+  const auto plan = pickCompaction(ready, 0);
   ASSERT_TRUE(plan.has_value());
   ASSERT_TRUE(plan->input_version == ready);
-  ASSERT_EQ(plan->level1_begin, 1U);
-  ASSERT_EQ(plan->level1_end, 3U);
+  ASSERT_EQ(plan->input_level, kLevel0);
+  ASSERT_EQ(plan->inputs.begin, 0U);
+  ASSERT_EQ(plan->inputs.end, 4U);
+  ASSERT_EQ(plan->overlaps.begin, 1U);
+  ASSERT_EQ(plan->overlaps.end, 3U);
+}
+
+TEST(level1CompactionSelectsOneFileAndAllOverlappingLevel2Files) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory, {},
+                             {{{"bravo", 9, ValueType::kValue, "b"},
+                               {"foxtrot", 8, ValueType::kValue, "f"}},
+                              {{"hotel", 7, ValueType::kValue, "h"},
+                               {"india", 6, ValueType::kValue, "i"}}},
+                             {{{"alpha", 5, ValueType::kValue, "a"},
+                               {"charlie", 4, ValueType::kValue, "c"}},
+                              {{"delta", 3, ValueType::kValue, "d"},
+                               {"echo", 2, ValueType::kValue, "e"}},
+                              {{"golf", 1, ValueType::kValue, "g"},
+                               {"zulu", 1, ValueType::kValue, "z"}}});
+
+  const auto plan = pickCompaction(version, 9, {1, 1024});
+  ASSERT_TRUE(plan.has_value());
+  ASSERT_EQ(plan->input_level, kLevel1);
+  ASSERT_EQ(plan->inputs.begin, 0U);
+  ASSERT_EQ(plan->inputs.end, 1U);
+  ASSERT_EQ(plan->overlaps.begin, 0U);
+  ASSERT_EQ(plan->overlaps.end, 2U);
 }
 
 TEST(level0CompactionReclaimsVersionsWithoutSnapshots) {
@@ -143,13 +200,15 @@ TEST(level0CompactionReclaimsVersionsWithoutSnapshots) {
                              {{{"alpha", 3, ValueType::kValue, "oldest"},
                                {"charlie", 2, ValueType::kValue, "c"}},
                               {{"zulu", 1, ValueType::kValue, "untouched"}}});
-  const auto plan = pickLevel0Compaction(version, 9);
+  const auto plan = pickCompaction(version, 9);
   ASSERT_TRUE(plan.has_value());
-  ASSERT_EQ(plan->level1_begin, 0U);
-  ASSERT_EQ(plan->level1_end, 1U);
+  ASSERT_EQ(plan->overlaps.begin, 0U);
+  ASSERT_EQ(plan->overlaps.end, 1U);
 
-  CompactionOutput output;
-  ASSERT_OK(buildLevel1Table(*plan, 100, directory.path(), output));
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs));
+  ASSERT_EQ(outputs.size(), 1U);
+  const CompactionOutput& output = outputs[0];
   ASSERT_EQ(output.meta.number, 100U);
   ASSERT_TRUE(output.reader != nullptr);
   ASSERT_TRUE(std::filesystem::exists(
@@ -170,16 +229,15 @@ TEST(level0CompactionReclaimsVersionsWithoutSnapshots) {
     ASSERT_EQ(entries[index].value, wanted[index].value);
   }
 
-  const auto installed = plan->input_version->withLevel0Compaction(
-      plan->level1_begin, plan->level1_end, output.meta, output.reader);
+  const auto installed = install(*plan, outputs);
   ASSERT_TRUE(installed != plan->input_version);
-  ASSERT_TRUE(installed->level0().empty());
-  ASSERT_EQ(installed->level1().size(), 2U);
-  ASSERT_EQ(installed->level1()[0].meta.number, output.meta.number);
-  ASSERT_EQ(installed->level1()[1].meta.number,
-            plan->input_version->level1()[1].meta.number);
-  ASSERT_EQ(plan->input_version->level0().size(), 4U);
-  ASSERT_EQ(plan->input_version->level1().size(), 2U);
+  ASSERT_TRUE(installed->level(kLevel0).empty());
+  ASSERT_EQ(installed->level(kLevel1).size(), 2U);
+  ASSERT_EQ(installed->level(kLevel1)[0].meta.number, output.meta.number);
+  ASSERT_EQ(installed->level(kLevel1)[1].meta.number,
+            plan->input_version->level(kLevel1)[1].meta.number);
+  ASSERT_EQ(plan->input_version->level(kLevel0).size(), 4U);
+  ASSERT_EQ(plan->input_version->level(kLevel1).size(), 2U);
 }
 
 TEST(level0CompactionKeepsVersionsNeededByOldestSnapshot) {
@@ -191,15 +249,15 @@ TEST(level0CompactionKeepsVersionsNeededByOldestSnapshot) {
                               {{"bravo", 8, ValueType::kValue, "b"}}},
                              {{{"alpha", 3, ValueType::kValue, "obsolete"},
                                {"charlie", 2, ValueType::kValue, "c"}}});
-  const auto plan = pickLevel0Compaction(version, 4);
+  const auto plan = pickCompaction(version, 4);
   ASSERT_TRUE(plan.has_value());
   ASSERT_EQ(plan->oldest_snapshot, 4U);
 
-  CompactionOutput output;
-  ASSERT_OK(buildLevel1Table(*plan, 100, directory.path(), output));
-  ASSERT_TRUE(output.reader != nullptr);
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs));
+  ASSERT_EQ(outputs.size(), 1U);
 
-  const std::vector<OwnedEntry> entries = readAll(*output.reader);
+  const std::vector<OwnedEntry> entries = readAll(*outputs[0].reader);
   const std::vector<OwnedEntry> wanted = {
       {encodeInternalKey("alpha", 9, ValueType::kValue), "latest"},
       {encodeInternalKey("alpha", 7, ValueType::kValue), "newer"},
@@ -222,28 +280,162 @@ TEST(level0CompactionDropsBaseLevelTombstoneAndHiddenValue) {
                               {{"key", 6, ValueType::kValue, "v6"}},
                               {{"key", 5, ValueType::kValue, "v5"}}},
                              {{{"key", 4, ValueType::kValue, "oldest"}}});
-  const auto plan = pickLevel0Compaction(version, 8);
+  const auto plan = pickCompaction(version, 8);
   ASSERT_TRUE(plan.has_value());
-  ASSERT_EQ(plan->level1_begin, 0U);
-  ASSERT_EQ(plan->level1_end, 1U);
+  ASSERT_EQ(plan->overlaps.begin, 0U);
+  ASSERT_EQ(plan->overlaps.end, 1U);
 
-  CompactionOutput output;
-  ASSERT_OK(buildLevel1Table(*plan, 100, directory.path(), output));
-  ASSERT_TRUE(output.reader == nullptr);
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs));
+  ASSERT_TRUE(outputs.empty());
   ASSERT_TRUE(!std::filesystem::exists(
       sstableTemporaryFileName(directory.path(), 100)));
   ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 100)));
 
-  const auto installed = plan->input_version->withLevel0Compaction(
-      plan->level1_begin, plan->level1_end, output.meta, output.reader);
-  ASSERT_TRUE(installed->level0().empty());
-  ASSERT_TRUE(installed->level1().empty());
+  const auto installed = install(*plan, outputs);
+  ASSERT_TRUE(installed->level(kLevel0).empty());
+  ASSERT_TRUE(installed->level(kLevel1).empty());
 
   LookupResult result = LookupResult::kValue;
   std::string value = "unchanged";
   ASSERT_OK(installed->get({}, "key", 8, result, value));
   ASSERT_EQ(result, LookupResult::kAbsent);
   ASSERT_EQ(value, "unchanged");
+}
+
+TEST(level0CompactionKeepsTombstoneWhenLevel2MayContainOlderValue) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory,
+                             {{{"key", 8, ValueType::kDeletion, ""}},
+                              {{"key", 7, ValueType::kValue, "v7"}},
+                              {{"key", 6, ValueType::kValue, "v6"}},
+                              {{"key", 5, ValueType::kValue, "v5"}}},
+                             {}, {{{"key", 4, ValueType::kValue, "v4"}}});
+  const auto plan = pickCompaction(version, 8);
+  ASSERT_TRUE(plan.has_value());
+  ASSERT_EQ(plan->input_level, kLevel0);
+
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs));
+  ASSERT_EQ(outputs.size(), 1U);
+  const std::vector<OwnedEntry> entries = readAll(*outputs[0].reader);
+  ASSERT_EQ(entries.size(), 1U);
+  ASSERT_EQ(entries[0].internal_key,
+            encodeInternalKey("key", 8, ValueType::kDeletion));
+
+  const auto installed = install(*plan, outputs);
+  LookupResult result = LookupResult::kValue;
+  std::string value = "unchanged";
+  ASSERT_OK(installed->get({}, "key", 8, result, value));
+  ASSERT_EQ(result, LookupResult::kDeleted);
+  ASSERT_EQ(installed->level(kLevel2).size(), 1U);
+}
+
+TEST(level1CompactionKeepsVersionNeededByOldestSnapshot) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory, {},
+                             {{{"key", 9, ValueType::kValue, "latest"},
+                               {"key", 7, ValueType::kValue, "newer"}}},
+                             {{{"key", 4, ValueType::kValue, "snapshot"},
+                               {"key", 3, ValueType::kValue, "obsolete"}}});
+  const CompactionOptions options{1, 1024};
+  const auto plan = pickCompaction(version, 4, options);
+  ASSERT_TRUE(plan.has_value());
+
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs, options));
+  ASSERT_EQ(outputs.size(), 1U);
+  const std::vector<OwnedEntry> entries = readAll(*outputs[0].reader);
+  ASSERT_EQ(entries.size(), 3U);
+  ASSERT_EQ(entries[0].value, "latest");
+  ASSERT_EQ(entries[1].value, "newer");
+  ASSERT_EQ(entries[2].value, "snapshot");
+
+  const auto installed = install(*plan, outputs);
+  LookupResult result = LookupResult::kAbsent;
+  std::string value;
+  ASSERT_OK(installed->get({}, "key", 4, result, value));
+  ASSERT_EQ(result, LookupResult::kValue);
+  ASSERT_EQ(value, "snapshot");
+}
+
+TEST(level1CompactionDropsBottommostTombstoneAndHiddenValues) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory, {},
+                             {{{"key", 8, ValueType::kDeletion, ""},
+                               {"key", 7, ValueType::kValue, "v7"}}},
+                             {{{"key", 4, ValueType::kValue, "v4"}}});
+  const auto plan = pickCompaction(version, 8, {1, 1024});
+  ASSERT_TRUE(plan.has_value());
+  ASSERT_EQ(plan->input_level, kLevel1);
+
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs, {1, 1024}));
+  ASSERT_TRUE(outputs.empty());
+
+  const auto installed = install(*plan, outputs);
+  ASSERT_TRUE(installed->level(kLevel1).empty());
+  ASSERT_TRUE(installed->level(kLevel2).empty());
+}
+
+TEST(compactionSplitsOutputsOnlyBetweenUserKeys) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory, {},
+                             {{{"alpha", 9, ValueType::kValue, "new"},
+                               {"alpha", 8, ValueType::kValue, "old"},
+                               {"bravo", 7, ValueType::kValue, "b"},
+                               {"charlie", 6, ValueType::kValue, "c"}}});
+  const CompactionOptions options{1, 1};
+  const auto plan = pickCompaction(version, 0, options);
+  ASSERT_TRUE(plan.has_value());
+
+  std::vector<CompactionOutput> outputs;
+  ASSERT_OK(buildTables(*plan, 100, directory.path(), outputs, options));
+  ASSERT_EQ(outputs.size(), 3U);
+  ASSERT_EQ(readAll(*outputs[0].reader).size(), 2U);
+  ASSERT_EQ(readAll(*outputs[1].reader).size(), 1U);
+  ASSERT_EQ(readAll(*outputs[2].reader).size(), 1U);
+
+  for (const CompactionOutput& output : outputs) {
+    ParsedInternalKey smallest{};
+    ParsedInternalKey largest{};
+    ASSERT_TRUE(parseInternalKey(output.meta.smallest_key, smallest));
+    ASSERT_TRUE(parseInternalKey(output.meta.largest_key, largest));
+    ASSERT_EQ(smallest.user_key, largest.user_key);
+  }
+
+  const auto installed = install(*plan, outputs);
+  ASSERT_TRUE(installed->level(kLevel1).empty());
+  ASSERT_EQ(installed->level(kLevel2).size(), 3U);
+}
+
+TEST(compactionFailureRemovesAlreadyFinishedOutputs) {
+  CompactionTempDirectory directory;
+  auto version = openVersion(directory, {},
+                             {{{"alpha", 3, ValueType::kValue, "a"},
+                               {"bravo", 2, ValueType::kValue, "b"},
+                               {"charlie", 1, ValueType::kValue, "c"}}});
+  const CompactionOptions options{1, 1};
+  const auto plan = pickCompaction(version, 0, options);
+  ASSERT_TRUE(plan.has_value());
+
+  std::size_t allocations = 0;
+  std::vector<CompactionOutput> outputs;
+  const Status status = buildCompactionTables(
+      *plan, directory.path(),
+      [&allocations](std::uint64_t& number) {
+        if (allocations++ == 0) {
+          number = 100;
+          return Status::success();
+        }
+        return Status::ioError("injected file-number allocation failure");
+      },
+      outputs, options);
+  ASSERT_EQ(status.code(), StatusCode::kIOError);
+  ASSERT_TRUE(outputs.empty());
+  ASSERT_TRUE(!std::filesystem::exists(
+      sstableTemporaryFileName(directory.path(), 100)));
+  ASSERT_TRUE(!std::filesystem::exists(sstableFileName(directory.path(), 100)));
 }
 
 TEST(level0CompactionRejectsDuplicateInternalKeysAndCleansOutput) {
@@ -253,11 +445,11 @@ TEST(level0CompactionRejectsDuplicateInternalKeysAndCleansOutput) {
                               {{"duplicate", 4, ValueType::kValue, "second"}},
                               {{"middle", 3, ValueType::kValue, "m"}},
                               {{"zulu", 2, ValueType::kValue, "z"}}});
-  const auto plan = pickLevel0Compaction(version, 0);
+  const auto plan = pickCompaction(version, 0);
   ASSERT_TRUE(plan.has_value());
 
-  CompactionOutput output;
-  ASSERT_EQ(buildLevel1Table(*plan, 100, directory.path(), output).code(),
+  std::vector<CompactionOutput> outputs;
+  ASSERT_EQ(buildTables(*plan, 100, directory.path(), outputs).code(),
             StatusCode::kCorruption);
   ASSERT_TRUE(!std::filesystem::exists(
       sstableTemporaryFileName(directory.path(), 100)));

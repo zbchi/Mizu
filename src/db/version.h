@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <vector>
 
+#include "db/level.h"
 #include "db/lookup_result.h"
 #include "db/manifest.h"
 #include "lsmtree/db.h"
@@ -26,28 +28,24 @@ class Version final {
                      const ManifestState& manifest,
                      std::shared_ptr<const Version>& version);
 
-  // L0 顺序查找后在互不重叠的 L1 中至多读取一个文件
+  // L0 顺序查找后在互不重叠的 L1/L2 中每层至多读取一个文件
   Status get(const ReadOptions& options, Slice user_key,
              SequenceNumber visible_sequence, LookupResult& result,
              std::string& value) const;
 
   // 保留当前磁盘状态并将新 flush 文件放到 L0 最前面
   std::shared_ptr<const Version> withLevel0Table(
-      TableMeta meta,
-      std::shared_ptr<const SSTableReader> reader) const;
+      TableMeta meta, std::shared_ptr<const SSTableReader> reader) const;
 
-  // 清空全部 L0，并用可选归并输出替换参与压缩的连续 L1 区间。
-  // output_reader 为空时表示回收了全部输入记录。
-  std::shared_ptr<const Version> withLevel0Compaction(
-      std::size_t level1_begin, std::size_t level1_end, TableMeta output_meta,
-      std::shared_ptr<const SSTableReader> output_reader) const;
+  // 原子描述一次相邻层区间替换；outputs 为空表示全部输入已被回收。
+  std::shared_ptr<const Version> withCompaction(
+      std::size_t input_level, IndexRange inputs, IndexRange overlaps,
+      std::vector<Table> outputs) const;
 
-  const std::vector<Table>& level0() const noexcept { return level0_; }
-  const std::vector<Table>& level1() const noexcept { return level1_; }
+  const std::vector<Table>& level(std::size_t level) const noexcept;
 
  private:
-  std::vector<Table> level0_;
-  std::vector<Table> level1_;
+  std::array<std::vector<Table>, kNumLevels> levels_;
 };
 
-}
+}  // namespace lsmtree
