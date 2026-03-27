@@ -1,0 +1,337 @@
+#include "db/manifest.h"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cassert>
+#include <cerrno>
+#include <limits>
+#include <set>
+#include <string>
+#include <system_error>
+#include <utility>
+
+#include "util/coding.h"
+#include "util/crc32c.h"
+
+namespace lsmtree {
+namespace {
+
+constexpr char kManifestMagic[] = "LSMMAN01";
+constexpr std::size_t kManifestMagicSize = sizeof(kManifestMagic) - 1U;
+constexpr std::uint32_t kManifestVersion = 3;
+constexpr std::uint32_t kLevel1ManifestVersion = 2;
+constexpr std::uint32_t kLevel0ManifestVersion = 1;
+constexpr std::size_t kManifestChecksumSize = sizeof(std::uint32_t);
+constexpr std::size_t kInternalKeyTagSize = sizeof(std::uint64_t);
+constexpr std::size_t kMinimumTableEncodingSize = sizeof(std::uint64_t) * 2U +
+                                                  sizeof(std::uint32_t) * 2U +
+                                                  kInternalKeyTagSize * 2U;
+constexpr std::size_t kMaximumManifestSize = 64U * 1024U * 1024U;
+
+// 将 Manifest 文件操作错误统一转换为 Status
+Status ioError(const char* operation, const std::filesystem::path& path,
+               int error_number) {
+  const std::error_code error(error_number, std::generic_category());
+  return Status::ioError(std::string(operation) + " manifest " + path.string() +
+                         ": " + error.message());
+}
+
+// 校验单个文件元数据并保证文件编号在所有 level 中唯一
+const char* validateTable(const TableMeta& table,
+                          std::set<std::uint64_t>& numbers) {
+  if (table.number == 0 || table.file_size == 0) {
+    return "manifest contains invalid table metadata";
+  }
+  if (!numbers.insert(table.number).second) {
+    return "manifest contains a duplicate table number";
+  }
+  if (table.smallest_key.size() > std::numeric_limits<std::uint32_t>::max() ||
+      table.largest_key.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return "manifest table key is too large";
+  }
+
+  ParsedInternalKey smallest{};
+  ParsedInternalKey largest{};
+  if (!parseInternalKey(table.smallest_key, smallest) ||
+      !parseInternalKey(table.largest_key, largest) ||
+      InternalKeyLess{}(table.largest_key, table.smallest_key)) {
+    return "manifest contains an invalid table key range";
+  }
+  return nullptr;
+}
+
+// 检查即将编码或已经解码的完整 Manifest 状态是否自洽
+const char* validateState(const ManifestState& state) {
+  if (state.flushed_sequence > kMaxSequenceNumber) {
+    return "manifest flushed sequence is out of range";
+  }
+  if (state.oldest_wal_number == 0) {
+    return "manifest WAL number must be positive";
+  }
+  for (std::size_t level = 0; level < kNumLevels; ++level) {
+    if (state.levels[level].size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+      return "manifest has too many tables in a level";
+    }
+  }
+
+  std::set<std::uint64_t> numbers;
+  for (const TableMeta& table : state.levels[kLevel0]) {
+    if (const char* error = validateTable(table, numbers)) return error;
+  }
+
+  // 非 L0 层按 user key 划分文件，同一个 user key 不允许跨越文件边界。
+  for (std::size_t level = kLevel1; level < kNumLevels; ++level) {
+    Slice previous_largest;
+    bool has_previous = false;
+    for (const TableMeta& table : state.levels[level]) {
+      if (const char* error = validateTable(table, numbers)) return error;
+
+      ParsedInternalKey smallest{};
+      ParsedInternalKey largest{};
+      const bool parsed_smallest =
+          parseInternalKey(table.smallest_key, smallest);
+      const bool parsed_largest = parseInternalKey(table.largest_key, largest);
+      assert(parsed_smallest && parsed_largest);
+      if (has_previous && previous_largest >= smallest.user_key) {
+        return "manifest non-L0 table ranges overlap or are out of order";
+      }
+      previous_largest = largest.user_key;
+      has_previous = true;
+    }
+  }
+  return nullptr;
+}
+
+// 从输入开头取出一个 fixed32 长度前缀字符串
+bool takeString(Slice& input, std::string& value) {
+  std::uint32_t size = 0;
+  if (!getFixed32(input, size) || input.size() < size) return false;
+  value.assign(input.data(), size);
+  input.remove_prefix(size);
+  return true;
+}
+
+// 写入一个 level 的文件数量和完整元数据
+Status appendTables(const std::vector<TableMeta>& tables,
+                    std::string& encoded) {
+  putFixed32(encoded, static_cast<std::uint32_t>(tables.size()));
+  for (const TableMeta& table : tables) {
+    putFixed64(encoded, table.number);
+    putFixed64(encoded, table.file_size);
+    putFixed32(encoded, static_cast<std::uint32_t>(table.smallest_key.size()));
+    encoded.append(table.smallest_key);
+    putFixed32(encoded, static_cast<std::uint32_t>(table.largest_key.size()));
+    encoded.append(table.largest_key);
+    if (encoded.size() > kMaximumManifestSize - kManifestChecksumSize) {
+      return Status::invalidArgument("manifest exceeds 64 MiB");
+    }
+  }
+  return Status::success();
+}
+
+// 从输入中完整取出一个 level 失败时由上层丢弃临时状态
+bool takeTables(Slice& input, std::vector<TableMeta>& tables) {
+  std::uint32_t table_count = 0;
+  if (!getFixed32(input, table_count) ||
+      table_count > input.size() / kMinimumTableEncodingSize) {
+    return false;
+  }
+
+  tables.reserve(table_count);
+  for (std::uint32_t index = 0; index < table_count; ++index) {
+    TableMeta table;
+    if (!getFixed64(input, table.number) ||
+        !getFixed64(input, table.file_size) ||
+        !takeString(input, table.smallest_key) ||
+        !takeString(input, table.largest_key)) {
+      return false;
+    }
+    tables.push_back(std::move(table));
+  }
+  return true;
+}
+
+// 将完整 Manifest 状态编码为带校验和的磁盘格式
+Status encodeManifest(const ManifestState& state, std::string& output) {
+  if (const char* error = validateState(state)) {
+    return Status::invalidArgument(error);
+  }
+
+  std::string encoded(kManifestMagic, kManifestMagicSize);
+  putFixed32(encoded, kManifestVersion);
+  putFixed64(encoded, state.flushed_sequence);
+  putFixed64(encoded, state.oldest_wal_number);
+  for (const auto& level : state.levels) {
+    Status status = appendTables(level, encoded);
+    if (!status.ok()) return status;
+  }
+
+  putFixed32(encoded, crc32c(encoded));
+  output = std::move(encoded);
+  return Status::success();
+}
+
+// 校验并解码 Manifest 失败时不修改调用方输出
+Status decodeManifest(Slice input, ManifestState& output) {
+  constexpr std::size_t kHeaderSize =
+      kManifestMagicSize + sizeof(std::uint32_t) + sizeof(std::uint64_t) * 2U +
+      sizeof(std::uint32_t);
+  if (input.size() < kHeaderSize + kManifestChecksumSize) {
+    return Status::corruption("manifest is shorter than its header");
+  }
+  if (input.size() > kMaximumManifestSize) {
+    return Status::corruption("manifest exceeds 64 MiB");
+  }
+
+  const Slice contents = input.substr(0, input.size() - kManifestChecksumSize);
+  const std::uint32_t stored_checksum =
+      decodeFixed32(input.data() + input.size() - kManifestChecksumSize);
+  if (crc32c(contents) != stored_checksum) {
+    return Status::corruption("manifest checksum mismatch");
+  }
+
+  Slice cursor = contents;
+  if (cursor.substr(0, kManifestMagicSize) !=
+      Slice(kManifestMagic, kManifestMagicSize)) {
+    return Status::corruption("invalid manifest magic");
+  }
+  cursor.remove_prefix(kManifestMagicSize);
+
+  std::uint32_t version = 0;
+  ManifestState decoded;
+  if (!getFixed32(cursor, version) || version < kLevel0ManifestVersion ||
+      version > kManifestVersion) {
+    return Status::corruption("unsupported manifest version");
+  }
+  if (!getFixed64(cursor, decoded.flushed_sequence) ||
+      !getFixed64(cursor, decoded.oldest_wal_number)) {
+    return Status::corruption("truncated manifest header");
+  }
+  if (!takeTables(cursor, decoded.levels[kLevel0])) {
+    return Status::corruption("invalid manifest L0 table list");
+  }
+  // v1 只有 L0，v2 追加 L1，v3 再追加 L2。
+  if (version >= kLevel1ManifestVersion &&
+      !takeTables(cursor, decoded.levels[kLevel1])) {
+    return Status::corruption("invalid manifest L1 table list");
+  }
+  if (version >= kManifestVersion &&
+      !takeTables(cursor, decoded.levels[kLevel2])) {
+    return Status::corruption("invalid manifest L2 table list");
+  }
+  if (!cursor.empty()) {
+    return Status::corruption("manifest has trailing bytes");
+  }
+
+  if (const char* error = validateState(decoded)) {
+    return Status::corruption(error);
+  }
+  output = std::move(decoded);
+  return Status::success();
+}
+
+// 处理短写和信号中断直到写完全部内容
+Status writeAll(int fd, Slice data, const std::filesystem::path& path) {
+  while (!data.empty()) {
+    const ssize_t written = ::write(fd, data.data(), data.size());
+    if (written > 0) {
+      data.remove_prefix(static_cast<std::size_t>(written));
+      continue;
+    }
+    if (written < 0 && errno == EINTR) continue;
+    return ioError("write", path, written == 0 ? EIO : errno);
+  }
+  return Status::success();
+}
+
+// 将临时 Manifest 内容同步到磁盘
+Status syncFile(int fd, const std::filesystem::path& path) {
+  while (::fdatasync(fd) != 0) {
+    if (errno == EINTR) continue;
+    return ioError("sync", path, errno);
+  }
+  return Status::success();
+}
+
+// 完整读取 Manifest 文件并限制最大文件大小
+Status readFile(const std::filesystem::path& path, std::string& output) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return ioError("open", path, errno);
+
+  struct stat info {};
+  if (::fstat(fd, &info) != 0) {
+    const Status status = ioError("stat", path, errno);
+    ::close(fd);
+    return status;
+  }
+  if (!S_ISREG(info.st_mode) || info.st_size < 0 ||
+      static_cast<std::uint64_t>(info.st_size) > kMaximumManifestSize) {
+    ::close(fd);
+    return Status::corruption("manifest is not a valid regular file");
+  }
+
+  std::string bytes(static_cast<std::size_t>(info.st_size), '\0');
+  std::size_t completed = 0;
+  while (completed < bytes.size()) {
+    const ssize_t read_size =
+        ::read(fd, bytes.data() + completed, bytes.size() - completed);
+    if (read_size > 0) {
+      completed += static_cast<std::size_t>(read_size);
+      continue;
+    }
+    if (read_size < 0 && errno == EINTR) continue;
+    const Status status = read_size == 0
+                              ? Status::corruption("manifest was truncated")
+                              : ioError("read", path, errno);
+    ::close(fd);
+    return status;
+  }
+  if (::close(fd) != 0) return ioError("close", path, errno);
+  output = std::move(bytes);
+  return Status::success();
+}
+
+}  // namespace
+
+// 先读完整文件再提交解码结果
+Status readManifest(const std::filesystem::path& path, ManifestState& state) {
+  std::string encoded;
+  Status status = readFile(path, encoded);
+  if (!status.ok()) return status;
+  return decodeManifest(encoded, state);
+}
+
+// 同步临时文件后通过 rename 原子发布新 Manifest
+Status writeManifest(const std::filesystem::path& path,
+                     const std::filesystem::path& temporary_path,
+                     const ManifestState& state) {
+  std::string encoded;
+  Status status = encodeManifest(state, encoded);
+  if (!status.ok()) return status;
+
+  const int fd = ::open(temporary_path.c_str(),
+                        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd < 0) return ioError("open", temporary_path, errno);
+
+  status = writeAll(fd, encoded, temporary_path);
+  if (status.ok()) status = syncFile(fd, temporary_path);
+  if (::close(fd) != 0 && status.ok()) {
+    status = ioError("close", temporary_path, errno);
+  }
+  if (!status.ok()) {
+    ::unlink(temporary_path.c_str());
+    return status;
+  }
+
+  if (::rename(temporary_path.c_str(), path.c_str()) != 0) {
+    status = ioError("rename", temporary_path, errno);
+    ::unlink(temporary_path.c_str());
+    return status;
+  }
+  return Status::success();
+}
+
+}  // namespace lsmtree
