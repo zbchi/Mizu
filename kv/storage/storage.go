@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"strconv"
 
-	"github.com/dgraph-io/badger/v3"
 	"github.com/zbchi/mizu/raft"
 )
 
@@ -32,6 +31,13 @@ type StorageReader interface {
 	Close()
 }
 
+// Item is a stable copy of one key/value returned by an Iterator. Backends
+// must not expose their native database item types through this interface.
+type Item struct {
+	Key   []byte
+	Value []byte
+}
+
 type Modify struct {
 	Data interface{}
 }
@@ -51,7 +57,7 @@ type Iterator interface {
 	Seek(key []byte)
 	Valid() bool
 	Next()
-	Item() *badger.Item
+	Item() (Item, error)
 	Close()
 }
 

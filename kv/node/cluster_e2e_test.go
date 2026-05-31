@@ -20,7 +20,7 @@ import (
 )
 
 type clusterNode struct {
-	store     *storage.BadgerStorage
+	store     storage.Storage
 	node      *Node
 	transport *transport.Transport
 	server    *grpc.Server
@@ -183,7 +183,7 @@ func (c *testCluster) startNode(t *testing.T, id uint64, raftListener, kvListene
 	t.Helper()
 
 	regions := buildStaticRegionsForTest(raftPeerInfos(c.raftAddrs))
-	store := storage.NewBadgerStorage(filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)))
+	store := storage.NewLSMStorage(filepath.Join(c.baseDir, fmt.Sprintf("node-%d", id)))
 	require.NoError(t, store.Start())
 
 	node, err := New(&Config{

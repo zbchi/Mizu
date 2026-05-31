@@ -24,6 +24,7 @@ func main() {
 	raftAddr := flag.String("raft-addr", ":3001", "Raft communication address")
 	addr := flag.String("addr", ":2008", "KV service address")
 	dbPath := flag.String("db", "/tmp/mizu-raft", "Database path")
+	engine := flag.String("engine", "lsm", "Storage engine: lsm or badger")
 	peers := flag.String("peers", "", "Peers in format: id1@addr1,id2@addr2...")
 	flag.Parse()
 
@@ -44,7 +45,16 @@ func main() {
 	}
 
 	storagePath := dbPathForNode(*dbPath, *id)
-	store := storage.NewBadgerStorage(storagePath)
+	var store storage.Storage
+	switch *engine {
+	case "lsm":
+		store = storage.NewLSMStorage(storagePath)
+	case "badger":
+		store = storage.NewBadgerStorage(storagePath)
+	default:
+		slog.Error("Unsupported storage engine", "engine", *engine)
+		os.Exit(1)
+	}
 	if err := store.Start(); err != nil {
 		slog.Error("Failed to start storage", "error", err)
 		os.Exit(1)

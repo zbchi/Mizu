@@ -6,6 +6,7 @@ option(LSMTREE_BUILD_TESTS "Build lsmtree tests" ON)
 find_package(Threads REQUIRED)
 
 add_library(lsmtree
+  src/c_api.cc
   src/db/compaction.cc
   src/db/db.cc
   src/db/db_files.cc

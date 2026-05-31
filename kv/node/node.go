@@ -221,23 +221,21 @@ func (kn *Node) Scan(ctx context.Context, req *kvpb.RaftCmdRequest) (*kvpb.RaftC
 
 	pairs := make([]*kvpb.KvPair, 0, limit)
 	for ; iter.Valid(); iter.Next() {
-		item := iter.Item()
-		encodedKey := item.KeyCopy(nil)
+		item, err := iter.Item()
+		if err != nil {
+			return kn.errorResponse(req, reg, err), nil
+		}
+		encodedKey := item.Key
 		// RegionStorage keys are prefixed by region/CF metadata; decode also filters out
-		// entries that belong to another logical keyspace in the same Badger instance.
+		// entries that belong to another logical keyspace in the same engine instance.
 		userKey, ok := storage.DecodeUserKey(reg.ID, readReq.Scan.Cf, encodedKey)
 		if !ok {
 			continue
 		}
 
-		value, err := item.ValueCopy(nil)
-		if err != nil {
-			return kn.errorResponse(req, reg, err), nil
-		}
-
 		pairs = append(pairs, &kvpb.KvPair{
 			Key:   userKey,
-			Value: value,
+			Value: item.Value,
 		})
 
 		if limit > 0 && len(pairs) >= limit {

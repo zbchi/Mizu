@@ -181,8 +181,14 @@ func (it *badgerIterator) Next() {
 	it.it.Next()
 }
 
-func (it *badgerIterator) Item() *badgerdb.Item {
-	return it.it.Item()
+func (it *badgerIterator) Item() (Item, error) {
+	item := it.it.Item()
+	key := item.KeyCopy(nil)
+	value, err := item.ValueCopy(nil)
+	if err != nil {
+		return Item{}, err
+	}
+	return Item{Key: key, Value: value}, nil
 }
 
 func (it *badgerIterator) Close() {

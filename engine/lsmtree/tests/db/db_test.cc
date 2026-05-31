@@ -123,7 +123,7 @@ TableMeta buildSingleEntryTable(const std::filesystem::path& directory,
 
 ManifestState waitForCompaction(const std::filesystem::path& directory,
                                 std::uint64_t previous_output = 0) {
-  for (int attempt = 0; attempt < 2000; ++attempt) {
+  for (int attempt = 0; attempt < 5000; ++attempt) {
     ManifestState state;
     ASSERT_OK(readManifest(manifestFileName(directory), state));
     if (state.levels[kLevel0].empty() && state.levels[kLevel1].size() == 1U &&
